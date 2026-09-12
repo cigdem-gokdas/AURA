@@ -39,6 +39,48 @@ export interface InstrumentMeta {
   tickSize: number;
 }
 
+export interface SpotFeeRate {
+  symbol: string;
+  makerRate: number;
+  takerRate: number;
+}
+
+export interface TradingBalance {
+  currency: string;
+  equity: number;
+  available: number;
+}
+
+export interface TradingBalanceSnapshot {
+  totalEquityUsd: number;
+  balances: readonly TradingBalance[];
+  timestamp: number;
+}
+
+export interface OpenSpotOrder {
+  symbol: string;
+  orderId: string;
+  clientOrderId: string | null;
+  side: 'buy' | 'sell';
+  state: 'live' | 'partially_filled';
+  quantity: number;
+  filledQuantity: number;
+  price: number | null;
+  timestamp: number;
+}
+
+export interface RecentSpotFill {
+  symbol: string;
+  fillId: string;
+  orderId: string;
+  side: 'buy' | 'sell';
+  quantity: number;
+  price: number;
+  fee: number;
+  feeCurrency: string;
+  timestamp: number;
+}
+
 export interface CommandResult {
   exitCode: number;
   stdout: string;
@@ -60,4 +102,10 @@ export interface MarketAdapter {
   ): Promise<readonly Candle[]>;
   getOrderBook(symbol: string, depth: number): Promise<OrderBookSnapshot>;
   getInstrumentMeta(symbol: string): Promise<InstrumentMeta>;
+  checkConnectorAvailable(): Promise<boolean>;
+  checkMarketReachable(symbol: string): Promise<boolean>;
+  getSpotFeeRate(symbol: string): Promise<SpotFeeRate>;
+  getTradingBalanceSnapshot(): Promise<TradingBalanceSnapshot>;
+  getOpenSpotOrders(symbol: string): Promise<readonly OpenSpotOrder[]>;
+  getRecentSpotFills(symbol: string): Promise<readonly RecentSpotFill[]>;
 }
