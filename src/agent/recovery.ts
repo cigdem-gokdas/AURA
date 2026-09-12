@@ -2,6 +2,7 @@ import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { ExchangePositionSnapshot, StartupExchangeSnapshot } from '../execution/types.js';
 import type { OpenPosition, StartupMonitorContext } from '../monitor/types.js';
+import { isAuraProductionClientId } from '../okx/client-id.js';
 
 interface RecoveryCheckpoint {
   version: 1;
@@ -13,6 +14,10 @@ interface RecoveryCheckpoint {
   protectionPlan: OpenPosition['protectionPlan'];
   protectionMode: OpenPosition['protectionMode'];
   currentStopPrice: number;
+  /** Exchange identities needed to cancel attached protection after a restart. */
+  entryOrderId?: string | null;
+  entryClientOrderId?: string | null;
+  attachedProtectionIds?: readonly string[];
 }
 
 const empty = (): StartupMonitorContext => ({ referencePrices: {}, openedAtBySymbol: {},
@@ -20,7 +25,6 @@ const empty = (): StartupMonitorContext => ({ referencePrices: {}, openedAtBySym
 const positive = (value: unknown): value is number => typeof value === 'number'
   && Number.isFinite(value) && value > 0;
 const quantityTolerance = 1e-10;
-const auraClientOrderId = (value: string | null): boolean => value !== null && /^aura\d+_\d+$/.test(value);
 
 export class OwnershipAmbiguityError extends Error {
   constructor(message: string) { super(`${message}; reconciliation required`); }
@@ -42,6 +46,8 @@ export class AgentRecoveryStore {
       entryPrice: position.weightedAverageEntryPrice, openedAt: position.openedAt,
       updatedAt: position.updatedAt, protectionPlan: position.protectionPlan,
       protectionMode: position.protectionMode, currentStopPrice: position.protection.currentStopPrice,
+      entryOrderId: position.entryOrderId ?? null, entryClientOrderId: position.entryClientOrderId ?? null,
+      attachedProtectionIds: [...(position.attachedProtectionIds ?? [])],
     };
     const temporary = `${this.path}.${process.pid}.tmp`;
     await writeFile(temporary, JSON.stringify(checkpoint), { mode: 0o600 });
@@ -64,7 +70,11 @@ export class AgentRecoveryStore {
       || !positive(state.currentStopPrice) || !state.protectionPlan
       || state.protectionPlan.symbol !== state.symbol || !positive(state.protectionPlan.stopDistanceAbsolute)
       || !positive(state.protectionPlan.stopDistanceFraction)
-      || state.protectionMode !== state.protectionPlan.protectionMode) {
+      || state.protectionMode !== state.protectionPlan.protectionMode
+      || (state.entryOrderId != null && typeof state.entryOrderId !== 'string')
+      || (state.entryClientOrderId != null && typeof state.entryClientOrderId !== 'string')
+      || (state.attachedProtectionIds !== undefined && (!Array.isArray(state.attachedProtectionIds)
+        || state.attachedProtectionIds.some(id => typeof id !== 'string' || !id)))) {
       throw new Error('Invalid AURA recovery checkpoint');
     }
     return state;
@@ -74,9 +84,21 @@ export class AgentRecoveryStore {
     const checkpoint = await this.load();
     const claims = new Set<string>();
     const heldSymbols = new Set(snapshot.positions.filter(position => position.quantity > 0).map(position => position.symbol));
-    for (const order of snapshot.openOrders) if (auraClientOrderId(order.clientOrderId)) claims.add(order.symbol);
-    for (const fill of snapshot.recentFills) if (heldSymbols.has(fill.symbol)
-      && auraClientOrderId(fill.clientOrderId)) claims.add(fill.symbol);
+    for (const order of snapshot.openOrders) if (isAuraProductionClientId(order.clientOrderId)) claims.add(order.symbol);
+    // Fills prove ownership only while AURA still appears to hold what it bought: the latest
+    // AURA fill for a held symbol is a BUY, or AURA buys exceed AURA sells by more than fees
+    // and lot rounding. A completed round trip (ENTRY buy then EXIT sell, or a smoke cleanup
+    // SELL) leaves only inventory and sub-lot dust behind and must not block a restart.
+    for (const symbol of heldSymbols) {
+      const auraFills = snapshot.recentFills
+        .filter(fill => fill.symbol === symbol && isAuraProductionClientId(fill.clientOrderId))
+        .sort((a, b) => a.timestamp - b.timestamp);
+      if (!auraFills.length) continue;
+      const bought = auraFills.filter(fill => fill.side !== 'sell').reduce((sum, fill) => sum + fill.quantity, 0);
+      const sold = auraFills.filter(fill => fill.side === 'sell').reduce((sum, fill) => sum + fill.quantity, 0);
+      const stillOpen = auraFills.at(-1)!.side !== 'sell' || bought - sold > bought * 0.005 + quantityTolerance;
+      if (stillOpen) claims.add(symbol);
+    }
     if (claims.size > 1 || (checkpoint && [...claims].some(symbol => symbol !== checkpoint.symbol))) {
       throw new OwnershipAmbiguityError('Multiple AURA ownership claims');
     }
@@ -90,6 +112,16 @@ export class AgentRecoveryStore {
       || checkpoint.updatedAt > snapshot.timestamp) {
       throw new OwnershipAmbiguityError('Missing or mismatched AURA position recovery checkpoint');
     }
+    // A checkpoint that outlived its trade would turn wallet inventory into a phantom
+    // position. AURA EXIT sells since the entry that cover the checkpointed quantity
+    // prove the trade closed; the stale checkpoint must be reconciled, never restored.
+    const soldSinceEntry = snapshot.recentFills
+      .filter(fill => fill.symbol === checkpoint.symbol && fill.side === 'sell'
+        && isAuraProductionClientId(fill.clientOrderId) && fill.timestamp >= checkpoint.openedAt)
+      .reduce((sum, fill) => sum + fill.quantity, 0);
+    if (soldSinceEntry >= checkpoint.quantity * 0.99) {
+      throw new OwnershipAmbiguityError('Checkpointed AURA position was already sold by an AURA exit; stale checkpoint');
+    }
     const managed: ExchangePositionSnapshot = { symbol: checkpoint.symbol, quantity: checkpoint.quantity,
       averageEntryPrice: checkpoint.entryPrice, updatedAt: snapshot.timestamp };
     const unmanaged = snapshot.positions.flatMap(position => {
@@ -102,6 +134,9 @@ export class AgentRecoveryStore {
       initialStopPrice: Math.max(checkpoint.protectionPlan.initialStopPrice, checkpoint.currentStopPrice) };
     return { referencePrices: references, openedAtBySymbol: { [checkpoint.symbol]: checkpoint.openedAt },
       protectionPlans: { [checkpoint.symbol]: plan }, protectionModes: { [checkpoint.symbol]: checkpoint.protectionMode },
-      managedPositions: [managed], unmanagedInventory: unmanaged };
+      managedPositions: [managed], unmanagedInventory: unmanaged,
+      exchangeLinks: { [checkpoint.symbol]: { entryOrderId: checkpoint.entryOrderId ?? null,
+        entryClientOrderId: checkpoint.entryClientOrderId ?? null,
+        attachedProtectionIds: [...(checkpoint.attachedProtectionIds ?? [])] } } };
   }
 }

@@ -208,6 +208,36 @@ describe('OkxMcpConnector lifecycle', () => {
     expect(client.close).toHaveBeenCalledOnce();
   });
 
+  it('preserves only sanitized MCP rejection diagnostics for a WRITE result', async () => {
+    const writeConfig: OkxConnectorConfig = { ...config, lane: 'WRITE', modules: ['spot'], readOnly: false };
+    const { client, factory } = fakeSession(['spot_place_order']);
+    const connector = new OkxMcpConnector(writeConfig, factory);
+    await connector.connect();
+    client.callTool.mockResolvedValueOnce({ isError: true, structuredContent: {
+      ok: false, tool: 'spot_place_order', code: '51008',
+      msg: 'Insufficient balance', data: [{ sCode: '51008', sMsg: 'Insufficient balance',
+        clOrdId: 'AURASMOKEabcdef0123456789abcdef' }],
+    } });
+    await expect(connector.callTool('spot_place_order', { instId: 'ETH-USDT' }))
+      .rejects.toMatchObject({ category: 'TOOL_CALL_FAILED', diagnostic: {
+        toolName: 'spot_place_order', isError: true, exchangeCode: '51008',
+        exchangeMessage: 'Insufficient balance', returnedOrderId: null,
+        returnedClientOrderId: 'AURASMOKEabcdef0123456789abcdef', schemaParsed: true,
+      } });
+    client.callTool.mockResolvedValueOnce({ isError: true, structuredContent: {
+      ok: false, tool: 'spot_place_order', code: '1',
+      msg: 'api_key=private-value',
+    } });
+    await expect(connector.callTool('spot_place_order', { instId: 'ETH-USDT' }))
+      .rejects.toMatchObject({ diagnostic: { exchangeMessage: '[redacted]' } });
+    client.callTool.mockResolvedValueOnce({ isError: true,
+      content: [{ type: 'text', text: 'Exchange rejected order size' }] });
+    await expect(connector.callTool('spot_place_order', { instId: 'ETH-USDT' }))
+      .rejects.toMatchObject({ diagnostic: { isError: true,
+        exchangeMessage: 'Exchange rejected order size', schemaParsed: false } });
+    await connector.disconnect();
+  });
+
   it('marks an unexpectedly closed transport as disconnected', async () => {
     const { factory } = fakeSession();
     const connector = new OkxMcpConnector(config, factory);
@@ -221,5 +251,45 @@ describe('OkxMcpConnector lifecycle', () => {
     ).rejects.toMatchObject({
       category: 'CONNECTOR_NOT_CONNECTED',
     });
+  });
+});
+
+describe('bounded read-lane retry', () => {
+  function flakySession(toolName: string, failures: number) {
+    const { client, factory } = fakeSession([toolName]);
+    let attempts = 0;
+    client.callTool.mockImplementation(async () => {
+      attempts += 1;
+      if (attempts <= failures) return { isError: true, content: [{ type: 'text', text: '{"ok":false,"code":"50011","msg":"Rate limit"}' }] };
+      return { structuredContent: { tool: toolName, ok: true,
+        data: { endpoint: '/api/v5/example', requestTime: '2026-09-12T00:00:00Z', data: [] } } };
+    });
+    return { client, factory };
+  }
+
+  it('retries a transient READ-lane tool failure exactly once and then fails closed', async () => {
+    const readConfig: OkxConnectorConfig = { ...config, lane: 'READ', readOnly: true, modules: ['market', 'account', 'spot'] };
+    const once = flakySession('market_get_ticker', 1);
+    const connector = new OkxMcpConnector(readConfig, once.factory);
+    await connector.connect();
+    await expect(connector.callTool('market_get_ticker', { instId: 'BTC-USDT' })).resolves.toBeDefined();
+    expect(once.client.callTool).toHaveBeenCalledTimes(2);
+    expect(connector.getRecentTraces().map(trace => trace.success)).toEqual([false, true]);
+
+    const twice = flakySession('market_get_ticker', 2);
+    const failing = new OkxMcpConnector(readConfig, twice.factory);
+    await failing.connect();
+    await expect(failing.callTool('market_get_ticker', { instId: 'BTC-USDT' })).rejects.toMatchObject({ category: 'TOOL_CALL_FAILED' });
+    expect(twice.client.callTool).toHaveBeenCalledTimes(2);
+  });
+
+  it('never retries a WRITE-lane failure', async () => {
+    const writeConfig: OkxConnectorConfig = { ...config, lane: 'WRITE', readOnly: false, modules: ['spot'] };
+    const { client, factory } = flakySession('spot_cancel_algo_order', 1);
+    const connector = new OkxMcpConnector(writeConfig, factory);
+    await connector.connect();
+    await expect(connector.callTool('spot_cancel_algo_order', { instId: 'BTC-USDT', algoId: '1' }))
+      .rejects.toMatchObject({ category: 'TOOL_CALL_FAILED' });
+    expect(client.callTool).toHaveBeenCalledTimes(1);
   });
 });

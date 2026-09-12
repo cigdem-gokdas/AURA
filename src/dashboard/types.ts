@@ -6,6 +6,8 @@ export interface EquityPoint {
   equity: number;
   dailyPnl: number;
   drawdownPct: number;
+  /** OKX profile this observation belongs to; keeps demo and live equity history from mixing. */
+  profile: 'demo' | 'live' | null;
 }
 
 export interface DashboardState {

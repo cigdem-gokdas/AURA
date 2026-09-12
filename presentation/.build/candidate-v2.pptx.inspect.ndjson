@@ -1,0 +1,180 @@
+{"kind":"deck","id":"pr/z6ngnj","name":"Deck"}
+{"kind":"layout","layoutId":"4521fa0c-4a3f-4984-931d-67d11ec2004b","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"ab3a2180-1834-4326-9bcf-834fa79ad4c0","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/7adzzk","slide":1,"title":"AURA","textShapes":15}
+{"kind":"textbox","id":"sh/p0zqt076","slide":1,"text":"AURA","textPreview":"AURA","textChars":4,"textLines":1,"bbox":[62,48,300,42]}
+{"kind":"textbox","id":"sh/2x8ryl8f","slide":1,"text":"Explainable autonomous\ntrading agent","textPreview":"Explainable autonomous | trading agent","textChars":36,"textLines":2,"bbox":[62,113,840,140]}
+{"kind":"textbox","id":"sh/3yh8rqp0","slide":1,"text":"One risk budget across BTC-USDT and ETH-USDT.\nEvery action has an evidence trail and a hard risk veto.","textPreview":"One risk budget across BTC-USDT and ETH-USDT. | Every action has an evidence trail and a hard risk veto.","textChars":102,"textLines":2,"bbox":[65,287,750,72]}
+{"kind":"shape","id":"sh/c3a94v6h","slide":1,"bbox":[62,402,1156,206]}
+{"kind":"textbox","id":"sh/dojqx072","slide":1,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[90,430,60,42]}
+{"kind":"textbox","id":"sh/q18r2lor","slide":1,"text":"COMPARE","textPreview":"COMPARE","textChars":7,"textLines":1,"bbox":[90,486,328,25]}
+{"kind":"textbox","id":"sh/b218vqpw","slide":1,"text":"BTC-USDT  /  ETH-USDT","textPreview":"BTC-USDT  /  ETH-USDT","textChars":21,"textLines":1,"bbox":[90,521,328,43]}
+{"kind":"textbox","id":"sh/s76psbqd","slide":1,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[422,487,40,40]}
+{"kind":"textbox","id":"sh/t8fqlg7y","slide":1,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[472,430,60,42]}
+{"kind":"textbox","id":"sh/d87e5wfi","slide":1,"text":"CRITIQUE","textPreview":"CRITIQUE","textChars":8,"textLines":1,"bbox":[472,486,328,25]}
+{"kind":"textbox","id":"sh/s7edwbyx","slide":1,"text":"Bounded Market Critic","textPreview":"Bounded Market Critic","textChars":21,"textLines":1,"bbox":[472,521,328,43]}
+{"kind":"textbox","id":"sh/r65w36xc","slide":1,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[804,487,40,40]}
+{"kind":"textbox","id":"sh/q5wvu1gr","slide":1,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[854,430,60,42]}
+{"kind":"textbox","id":"sh/1w7e9gfe","slide":1,"text":"AUTHORIZE","textPreview":"AUTHORIZE","textChars":9,"textLines":1,"bbox":[854,486,328,25]}
+{"kind":"textbox","id":"sh/0vyx0byt","slide":1,"text":"Deterministic Risk Engine","textPreview":"Deterministic Risk Engine","textChars":25,"textLines":1,"bbox":[854,521,328,43]}
+{"kind":"textbox","id":"sh/fapw76x8","slide":1,"text":"AI can reason; it cannot directly move capital.","textPreview":"AI can reason; it cannot directly move capital.","textChars":47,"textLines":1,"bbox":[62,630,1100,30]}
+{"kind":"notes","id":"nt/7adzzk","slide":1,"text":"AURA compares BTC-USDT and ETH-USDT for one managed risk budget. A bounded Market Critic challenges the selected setup, but only the deterministic Risk Engine can authorize execution. We built the product to make both action and refusal explainable."}
+{"kind":"slide","id":"sl/kem9pd","slide":2,"title":"02  /  DECISION SYSTEM","textShapes":38}
+{"kind":"textbox","id":"sh/cfu1szqh","slide":2,"text":"02  /  DECISION SYSTEM","textPreview":"02  /  DECISION SYSTEM","textChars":22,"textLines":1,"bbox":[62,38,600,24]}
+{"kind":"textbox","id":"sh/belkzu9w","slide":2,"text":"From market evidence to action","textPreview":"From market evidence to action","textChars":30,"textLines":1,"bbox":[62,70,1138,58]}
+{"kind":"textbox","id":"sh/adsjqp8b","slide":2,"text":"A single opportunity is considered; each step can stop the order.","textPreview":"A single opportunity is considered; each step can stop the order.","textChars":65,"textLines":1,"bbox":[64,125,1120,32]}
+{"kind":"shape","id":"sh/pcj2xkr6","slide":2,"bbox":[62,677,1156,1]}
+{"kind":"textbox","id":"sh/ora1ofql","slide":2,"text":"AURA  /  OKX AGENT TRADE KIT","textPreview":"AURA  /  OKX AGENT TRADE KIT","textChars":28,"textLines":1,"bbox":[62,684,450,18]}
+{"kind":"textbox","id":"sh/nq1kva90","slide":2,"text":"2 / 5","textPreview":"2 / 5","textChars":5,"textLines":1,"bbox":[1130,684,86,18]}
+{"kind":"shape","id":"sh/2psjm58f","slide":2,"bbox":[62,190,274,136]}
+{"kind":"textbox","id":"sh/1oj2tkru","slide":2,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[80,204,42,30]}
+{"kind":"textbox","id":"sh/0na1kfq9","slide":2,"text":"OKX ATK MCP","textPreview":"OKX ATK MCP","textChars":11,"textLines":1,"bbox":[80,239,236,30]}
+{"kind":"textbox","id":"sh/qp0rilo3","slide":2,"text":"Market, account and spot reads","textPreview":"Market, account and spot reads","textChars":30,"textLines":1,"bbox":[80,274,236,42]}
+{"kind":"textbox","id":"sh/bq9sbq5o","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[332,240,24,36]}
+{"kind":"shape","id":"sh/critkv69","slide":2,"bbox":[354,190,274,136]}
+{"kind":"textbox","id":"sh/dsbad0nu","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[372,204,42,30]}
+{"kind":"textbox","id":"sh/210relo7","slide":2,"text":"FEATURES + REGIME","textPreview":"FEATURES + REGIME","textChars":17,"textLines":1,"bbox":[372,239,236,30]}
+{"kind":"textbox","id":"sh/3m9s7q5s","slide":2,"text":"EMA · ATR · ADX · spread · OBI","textPreview":"EMA · ATR · ADX · spread · OBI","textChars":30,"textLines":1,"bbox":[372,274,236,42]}
+{"kind":"textbox","id":"sh/oni9gb6x","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[624,240,24,36]}
+{"kind":"shape","id":"sh/pora9gni","slide":2,"bbox":[646,190,274,136]}
+{"kind":"textbox","id":"sh/exgra1ov","slide":2,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[664,204,42,30]}
+{"kind":"textbox","id":"sh/fyps365g","slide":2,"text":"OPPORTUNITY RANKING","textPreview":"OPPORTUNITY RANKING","textChars":19,"textLines":1,"bbox":[664,239,236,30]}
+{"kind":"textbox","id":"sh/j25ob2l8","slide":2,"text":"Compare BTC and ETH","textPreview":"Compare BTC and ETH","textChars":19,"textLines":1,"bbox":[664,274,236,42]}
+{"kind":"textbox","id":"sh/i1c7ix4n","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[916,240,24,36]}
+{"kind":"shape","id":"sh/54nqdc3e","slide":2,"bbox":[938,190,274,136]}
+{"kind":"textbox","id":"sh/k3epk7mt","slide":2,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[956,204,42,30]}
+{"kind":"textbox","id":"sh/7658fmlk","slide":2,"text":"MARKET CRITIC","textPreview":"MARKET CRITIC","textChars":13,"textLines":1,"bbox":[956,239,236,30]}
+{"kind":"textbox","id":"sh/65w7mh4z","slide":2,"text":"Challenge the selected thesis","textPreview":"Challenge the selected thesis","textChars":29,"textLines":1,"bbox":[956,274,236,42]}
+{"kind":"shape","id":"sh/tsnqhc3a","slide":2,"bbox":[62,371,274,136]}
+{"kind":"textbox","id":"sh/s7ep8rmp","slide":2,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[80,385,42,30]}
+{"kind":"textbox","id":"sh/nalo3il0","slide":2,"text":"RISK CERTIFICATE","textPreview":"RISK CERTIFICATE","textChars":16,"textLines":1,"bbox":[80,420,236,30]}
+{"kind":"textbox","id":"sh/m9s7ad4f","slide":2,"text":"Hard veto and position size","textPreview":"Hard veto and position size","textChars":27,"textLines":1,"bbox":[80,455,236,42]}
+{"kind":"textbox","id":"sh/cfql4j2d","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[332,421,24,36]}
+{"kind":"shape","id":"sh/dgzmdojy","slide":2,"bbox":[354,371,274,136]}
+{"kind":"textbox","id":"sh/qd8329k7","slide":2,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[372,385,42,30]}
+{"kind":"textbox","id":"sh/beh4be1s","slide":2,"text":"MCP EXECUTION","textPreview":"MCP EXECUTION","textChars":13,"textLines":1,"bbox":[372,420,236,30]}
+{"kind":"textbox","id":"sh/obql0j2h","slide":2,"text":"ExecutionEngine only","textPreview":"ExecutionEngine only","textChars":20,"textLines":1,"bbox":[372,455,236,42]}
+{"kind":"textbox","id":"sh/pczm94j2","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[624,421,24,36]}
+{"kind":"shape","id":"sh/29o3y9kb","slide":2,"bbox":[646,371,274,136]}
+{"kind":"textbox","id":"sh/3ax47e1w","slide":2,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[664,385,42,30]}
+{"kind":"textbox","id":"sh/87a5c32l","slide":2,"text":"PROTECTION","textPreview":"PROTECTION","textChars":10,"textLines":1,"bbox":[664,420,236,30]}
+{"kind":"textbox","id":"sh/98jml8j6","slide":2,"text":"Verify or fall back safely","textPreview":"Verify or fall back safely","textChars":26,"textLines":1,"bbox":[664,455,236,42]}
+{"kind":"textbox","id":"sh/5svid0zi","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[916,421,24,36]}
+{"kind":"shape","id":"sh/4r214vix","slide":2,"bbox":[938,371,274,136]}
+{"kind":"textbox","id":"sh/jqt0bqhc","slide":2,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[956,385,42,30]}
+{"kind":"textbox","id":"sh/ipkj2l07","slide":2,"text":"RECONCILIATION","textPreview":"RECONCILIATION","textChars":14,"textLines":1,"bbox":[956,420,236,30]}
+{"kind":"textbox","id":"sh/tgv2hkzu","slide":2,"text":"Never guess after ambiguity","textPreview":"Never guess after ambiguity","textChars":27,"textLines":1,"bbox":[956,455,236,42]}
+{"kind":"shape","id":"sh/sfm18fi9","slide":2,"bbox":[62,580,1156,68]}
+{"kind":"textbox","id":"sh/redkfaho","slide":2,"text":"LLM critiques","textPreview":"LLM critiques","textChars":13,"textLines":1,"bbox":[84,597,300,34]}
+{"kind":"textbox","id":"sh/6d4j6503","slide":2,"text":"Risk Engine vetoes","textPreview":"Risk Engine vetoes","textChars":18,"textLines":1,"bbox":[448,597,365,34]}
+{"kind":"textbox","id":"sh/1kf2lkzq","slide":2,"text":"Provenance explains","textPreview":"Provenance explains","textChars":19,"textLines":1,"bbox":[867,597,328,34]}
+{"kind":"notes","id":"nt/kem9pd","slide":2,"text":"The OKX Agent Trade Kit supplies market and account evidence. AURA computes deterministic features and compares two liquid spot markets. The LLM is a critic, never a trader. The Risk Certificate has the final veto. Execution uses the separate write lane, and uncertainty is reconciled rather than retried blindly."}
+{"kind":"slide","id":"sl/hgem5s","slide":3,"title":"03  /  PRODUCT EXPERIENCE","textShapes":36}
+{"kind":"textbox","id":"sh/b2l83il4","slide":3,"text":"03  /  PRODUCT EXPERIENCE","textPreview":"03  /  PRODUCT EXPERIENCE","textChars":25,"textLines":1,"bbox":[48,29,580,22]}
+{"kind":"textbox","id":"sh/c3upc32p","slide":3,"text":"AURA Intelligence Desk","textPreview":"AURA Intelligence Desk","textChars":22,"textLines":1,"bbox":[48,61,1000,55]}
+{"kind":"textbox","id":"sh/x43q583u","slide":3,"text":"A decision you can inspect in one glance · representative observe-only view","textPreview":"A decision you can inspect in one glance · representative observe-only view","textChars":75,"textLines":1,"bbox":[50,113,1120,28]}
+{"kind":"shape","id":"sh/y5credkf","slide":3,"bbox":[47,156,1186,506]}
+{"kind":"textbox","id":"sh/j6l87il0","slide":3,"text":"✳  AURA  /  INTELLIGENCE DESK","textPreview":"✳  AURA  /  INTELLIGENCE DESK","textChars":29,"textLines":1,"bbox":[68,171,560,27]}
+{"kind":"shape","id":"sh/k7u9gn2l","slide":3,"bbox":[799,170,133,28]}
+{"kind":"textbox","id":"sh/l8nq9s36","slide":3,"text":"OBSERVE ONLY","textPreview":"OBSERVE ONLY","textChars":12,"textLines":1,"bbox":[809,172,113,24]}
+{"kind":"shape","id":"sh/e9872t4b","slide":3,"bbox":[944,170,111,28]}
+{"kind":"textbox","id":"sh/fa18velw","slide":3,"text":"READ ✓","textPreview":"READ ✓","textChars":6,"textLines":1,"bbox":[954,172,91,24]}
+{"kind":"shape","id":"sh/fq18bilc","slide":3,"bbox":[1066,170,149,28]}
+{"kind":"textbox","id":"sh/eps72d4r","slide":3,"text":"STATUS MCP","textPreview":"STATUS MCP","textChars":10,"textLines":1,"bbox":[1076,172,129,24]}
+{"kind":"shape","id":"sh/1sjqds32","slide":3,"bbox":[66,209,1147,1]}
+{"kind":"textbox","id":"sh/grap4nmh","slide":3,"text":"OPPORTUNITY BOARD","textPreview":"OPPORTUNITY BOARD","textChars":17,"textLines":1,"bbox":[70,225,426,24]}
+{"kind":"textbox","id":"sh/7mho7yl0","slide":3,"text":"One position maximum · BTC and ETH compared each cycle","textPreview":"One position maximum · BTC and ETH compared each cycle","textChars":54,"textLines":1,"bbox":[70,251,718,24]}
+{"kind":"shape","id":"sh/6l87yt4f","slide":3,"bbox":[70,284,354,82]}
+{"kind":"shape","id":"sh/tojq9836","slide":3,"bbox":[436,284,354,82]}
+{"kind":"textbox","id":"sh/snap03ml","slide":3,"text":"BTC-USDT","textPreview":"BTC-USDT","textChars":8,"textLines":1,"bbox":[87,294,230,27]}
+{"kind":"shape","id":"sh/jyho3yl4","slide":3,"bbox":[308,297,99,28]}
+{"kind":"textbox","id":"sh/ix87ut4j","slide":3,"text":"WAITING","textPreview":"WAITING","textChars":7,"textLines":1,"bbox":[318,299,79,24]}
+{"kind":"textbox","id":"sh/mto76tob","slide":3,"text":"No eligible setup published","textPreview":"No eligible setup published","textChars":27,"textLines":1,"bbox":[87,330,300,23]}
+{"kind":"textbox","id":"sh/nux8fypw","slide":3,"text":"ETH-USDT","textPreview":"ETH-USDT","textChars":8,"textLines":1,"bbox":[453,294,230,27]}
+{"kind":"shape","id":"sh/8v69836h","slide":3,"bbox":[674,297,99,28]}
+{"kind":"textbox","id":"sh/9wzqho72","slide":3,"text":"WAITING","textPreview":"WAITING","textChars":7,"textLines":1,"bbox":[684,299,79,24]}
+{"kind":"textbox","id":"sh/ax8rato7","slide":3,"text":"No eligible setup published","textPreview":"No eligible setup published","textChars":27,"textLines":1,"bbox":[453,330,300,23]}
+{"kind":"shape","id":"sh/vyh8jyps","slide":3,"bbox":[70,381,720,119]}
+{"kind":"textbox","id":"sh/wjq9c36d","slide":3,"text":"DECISION PROVENANCE","textPreview":"DECISION PROVENANCE","textChars":19,"textLines":1,"bbox":[88,392,340,23]}
+{"kind":"textbox","id":"sh/xkzql87y","slide":3,"text":"Market  →  Features  →  Ranking  →  Critic  →  Risk  →  Execution","textPreview":"Market  →  Features  →  Ranking  →  Critic  →  Risk  →  Execution","textChars":65,"textLines":1,"bbox":[88,423,678,30]}
+{"kind":"textbox","id":"sh/il8redoj","slide":3,"text":"No completed cycle · every stage is recorded once published","textPreview":"No completed cycle · every stage is recorded once published","textChars":59,"textLines":1,"bbox":[88,465,660,22]}
+{"kind":"shape","id":"sh/jmh8nip4","slide":3,"bbox":[70,512,720,132]}
+{"kind":"textbox","id":"sh/tg3adcr6","slide":3,"text":"ATK MCP TRACE","textPreview":"ATK MCP TRACE","textChars":13,"textLines":1,"bbox":[88,521,330,23]}
+{"kind":"textbox","id":"sh/sfutk7ql","slide":3,"text":"READ   market_get_ticker","textPreview":"READ   market_get_ticker","textChars":24,"textLines":1,"bbox":[88,555,330,21]}
+{"kind":"textbox","id":"sh/re1sb290","slide":3,"text":"READ   spot_get_fills","textPreview":"READ   spot_get_fills","textChars":21,"textLines":1,"bbox":[88,584,330,21]}
+{"kind":"textbox","id":"sh/6dsbix8f","slide":3,"text":"WRITE  no order call in this state","textPreview":"WRITE  no order call in this state","textChars":34,"textLines":1,"bbox":[436,555,330,21]}
+{"kind":"textbox","id":"sh/1k3uhcr2","slide":3,"text":"Independent stdio lanes","textPreview":"Independent stdio lanes","textChars":23,"textLines":1,"bbox":[436,584,330,21]}
+{"kind":"shape","id":"sh/gjuto7qx","slide":3,"bbox":[808,225,405,124]}
+{"kind":"textbox","id":"sh/filcfm9c","slide":3,"text":"MARKET CRITIC","textPreview":"MARKET CRITIC","textChars":13,"textLines":1,"bbox":[827,237,270,22]}
+{"kind":"textbox","id":"sh/ehcbmh8r","slide":3,"text":"Awaiting selected setup","textPreview":"Awaiting selected setup","textChars":23,"textLines":1,"bbox":[827,267,351,29]}
+{"kind":"textbox","id":"sh/ponulw7e","slide":3,"text":"Counter-thesis appears before risk review","textPreview":"Counter-thesis appears before risk review","textChars":41,"textLines":1,"bbox":[827,308,358,24]}
+{"kind":"shape","id":"sh/onetsrqt","slide":3,"bbox":[808,362,405,105]}
+{"kind":"textbox","id":"sh/03ydkva1","slide":3,"text":"RISK CERTIFICATE","textPreview":"RISK CERTIFICATE","textChars":16,"textLines":1,"bbox":[827,374,290,22]}
+{"kind":"textbox","id":"sh/l47ed0rm","slide":3,"text":"HOLD  /  NO PROPOSAL","textPreview":"HOLD  /  NO PROPOSAL","textChars":20,"textLines":1,"bbox":[827,404,357,29]}
+{"kind":"textbox","id":"sh/yhgvilsv","slide":3,"text":"No authorization → no execution","textPreview":"No authorization → no execution","textChars":31,"textLines":1,"bbox":[827,440,350,18]}
+{"kind":"shape","id":"sh/zipwbqtg","slide":3,"bbox":[808,480,405,71]}
+{"kind":"textbox","id":"sh/cfydgba5","slide":3,"text":"POSITION / PROTECTION","textPreview":"POSITION / PROTECTION","textChars":21,"textLines":1,"bbox":[827,488,326,20]}
+{"kind":"textbox","id":"sh/dg7e9gba","slide":3,"text":"FLAT  ·  no AURA-managed position","textPreview":"FLAT  ·  no AURA-managed position","textChars":33,"textLines":1,"bbox":[827,517,355,24]}
+{"kind":"shape","id":"sh/qdwvelsz","slide":3,"bbox":[808,564,405,80]}
+{"kind":"textbox","id":"sh/bepw7qtk","slide":3,"text":"ASK AURA  /  STATUS MCP","textPreview":"ASK AURA  /  STATUS MCP","textChars":23,"textLines":1,"bbox":[827,571,353,22]}
+{"kind":"textbox","id":"sh/wbixsfa9","slide":3,"text":"“Why no trade?”","textPreview":"“Why no trade?”","textChars":15,"textLines":1,"bbox":[827,597,300,24]}
+{"kind":"textbox","id":"sh/xcrelkru","slide":3,"text":"No qualifying setup or risk approval","textPreview":"No qualifying setup or risk approval","textChars":36,"textLines":1,"bbox":[827,622,353,18]}
+{"kind":"textbox","id":"sh/rix87yx8","slide":3,"text":"STATIC PRODUCT VIEW  ·  NO HISTORICAL TRADE OR PERFORMANCE CLAIMS","textPreview":"STATIC PRODUCT VIEW  ·  NO HISTORICAL TRADE OR PERFORMANCE CLAIMS","textChars":65,"textLines":1,"bbox":[56,674,900,18]}
+{"kind":"textbox","id":"sh/6h47ydgn","slide":3,"text":"3 / 5","textPreview":"3 / 5","textChars":5,"textLines":1,"bbox":[1140,674,75,18]}
+{"kind":"notes","id":"nt/hgem5s","slide":3,"text":"This slide substitutes for the live dashboard. Read it left to right: BTC and ETH are compared for one risk budget; a completed cycle would populate provenance. The Market Critic challenges a selected setup. The Risk Certificate can hold execution, and the trace shows which MCP reads contributed and whether the write lane was used. Position and protection remain explicit; Ask AURA and the read-only Status MCP explain why no trade occurred. This is a representative observe-only state, not a historical screenshot or performance result."}
+{"kind":"slide","id":"sl/34miqr","slide":4,"title":"04  /  MCP + SAFETY","textShapes":23}
+{"kind":"textbox","id":"sh/0vu5ozqx","slide":4,"text":"04  /  MCP + SAFETY","textPreview":"04  /  MCP + SAFETY","textChars":19,"textLines":1,"bbox":[62,38,600,24]}
+{"kind":"textbox","id":"sh/zul4ve9c","slide":4,"text":"Separate authority, visible evidence","textPreview":"Separate authority, visible evidence","textChars":36,"textLines":1,"bbox":[62,70,1138,58]}
+{"kind":"textbox","id":"sh/etcnm98r","slide":4,"text":"AURA is an OKX ATK client and also exposes a read-only Status MCP.","textPreview":"AURA is an OKX ATK client and also exposes a read-only Status MCP.","textChars":66,"textLines":1,"bbox":[64,125,1120,32]}
+{"kind":"shape","id":"sh/ds3mt4r6","slide":4,"bbox":[62,677,1156,1]}
+{"kind":"textbox","id":"sh/cra5kzql","slide":4,"text":"AURA  /  OKX AGENT TRADE KIT","textPreview":"AURA  /  OKX AGENT TRADE KIT","textChars":28,"textLines":1,"bbox":[62,684,450,18]}
+{"kind":"textbox","id":"sh/rq14ru90","slide":4,"text":"4 / 5","textPreview":"4 / 5","textChars":5,"textLines":1,"bbox":[1130,684,86,18]}
+{"kind":"shape","id":"sh/q5snip8f","slide":4,"bbox":[62,187,341,289]}
+{"kind":"textbox","id":"sh/xon65ora","slide":4,"text":"READ MCP PROCESS","textPreview":"READ MCP PROCESS","textChars":16,"textLines":1,"bbox":[86,210,290,34]}
+{"kind":"textbox","id":"sh/wne5wjqp","slide":4,"text":"market  ·  account  ·  spot reads","textPreview":"market  ·  account  ·  spot reads","textChars":33,"textLines":1,"bbox":[86,257,290,30]}
+{"kind":"shape","id":"sh/yxkjmh8v","slide":4,"bbox":[86,319,260,28]}
+{"kind":"textbox","id":"sh/zytkvmpg","slide":4,"text":"SERVER-LEVEL READ ONLY","textPreview":"SERVER-LEVEL READ ONLY","textChars":22,"textLines":1,"bbox":[96,321,240,24]}
+{"kind":"textbox","id":"sh/0z21orql","slide":4,"text":"Market evidence and exchange truth","textPreview":"Market evidence and exchange truth","textChars":34,"textLines":1,"bbox":[86,369,285,46]}
+{"kind":"textbox","id":"sh/l0v2xw76","slide":4,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[405,296,60,60]}
+{"kind":"shape","id":"sh/q9kjix8j","slide":4,"bbox":[470,187,341,289]}
+{"kind":"textbox","id":"sh/butkr2p4","slide":4,"text":"AURA","textPreview":"AURA","textChars":4,"textLines":1,"bbox":[496,210,292,39]}
+{"kind":"textbox","id":"sh/cv21k7qp","slide":4,"text":"Features  →  Critic  →  Risk","textPreview":"Features  →  Critic  →  Risk","textChars":28,"textLines":1,"bbox":[496,265,287,39]}
+{"kind":"shape","id":"sh/dwb2tc7a","slide":4,"bbox":[493,331,296,70]}
+{"kind":"textbox","id":"sh/ap43u1o3","slide":4,"text":"RISK CERTIFICATE","textPreview":"RISK CERTIFICATE","textChars":16,"textLines":1,"bbox":[507,340,275,23]}
+{"kind":"textbox","id":"sh/vqdkn6p8","slide":4,"text":"Final execution veto","textPreview":"Final execution veto","textChars":20,"textLines":1,"bbox":[507,368,260,23]}
+{"kind":"textbox","id":"sh/7apgfy50","slide":4,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[815,296,60,60]}
+{"kind":"shape","id":"sh/69gzmtof","slide":4,"bbox":[880,187,338,289]}
+{"kind":"textbox","id":"sh/tc7yh8nq","slide":4,"text":"WRITE MCP PROCESS","textPreview":"WRITE MCP PROCESS","textChars":17,"textLines":1,"bbox":[904,210,296,34]}
+{"kind":"textbox","id":"sh/sbyho36l","slide":4,"text":"spot execution only","textPreview":"spot execution only","textChars":19,"textLines":1,"bbox":[904,257,284,30]}
+{"kind":"shape","id":"sh/fepgjy5w","slide":4,"bbox":[904,319,254,28]}
+{"kind":"textbox","id":"sh/udgzqdob","slide":4,"text":"EXECUTIONENGINE ONLY","textPreview":"EXECUTIONENGINE ONLY","textChars":20,"textLines":1,"bbox":[914,321,234,24]}
+{"kind":"textbox","id":"sh/h07il8n2","slide":4,"text":"No LLM write access","textPreview":"No LLM write access","textChars":19,"textLines":1,"bbox":[904,369,275,42]}
+{"kind":"shape","id":"sh/gfyhs36h","slide":4,"bbox":[62,504,1156,136]}
+{"kind":"textbox","id":"sh/3290ni58","slide":4,"text":"ONE MANAGED POSITION","textPreview":"ONE MANAGED POSITION","textChars":20,"textLines":1,"bbox":[84,523,370,26]}
+{"kind":"textbox","id":"sh/210zudon","slide":4,"text":"NO BLIND RETRY","textPreview":"NO BLIND RETRY","textChars":14,"textLines":1,"bbox":[482,523,270,26]}
+{"kind":"textbox","id":"sh/07ixkn2l","slide":4,"text":"AMBIGUITY → RECONCILE","textPreview":"AMBIGUITY → RECONCILE","textChars":21,"textLines":1,"bbox":[824,523,360,26]}
+{"kind":"textbox","id":"sh/l8byds36","slide":4,"text":"Unmanaged wallet inventory stays separate. An LLM outage blocks entries; open-position rules remain deterministic.","textPreview":"Unmanaged wallet inventory stays separate. An LLM outage blocks entries; open-position rules remain deterministic.","textChars":114,"textLines":1,"bbox":[84,577,1098,48]}
+{"kind":"notes","id":"nt/34miqr","slide":4,"text":"The READ and WRITE lanes are separate MCP client processes with separate authority. The Market Critic only sees read-side evidence. The deterministic Risk Certificate gates execution. AURA also serves its own read-only status interface for outside observers. Safety rules allow one AURA-managed position, distinguish unrelated inventory, and stop under ambiguous execution or protection state. Current live entry protection remains unverified, so new live BUYs are blocked."}
+{"kind":"slide","id":"sl/jpw5rk","slide":5,"title":"05  /  WHY AURA","textShapes":16}
+{"kind":"textbox","id":"sh/dgr6tojq","slide":5,"text":"05  /  WHY AURA","textPreview":"05  /  WHY AURA","textChars":15,"textLines":1,"bbox":[62,38,600,24]}
+{"kind":"textbox","id":"sh/qd07y90z","slide":5,"text":"Explainable autonomy with limits","textPreview":"Explainable autonomy with limits","textChars":32,"textLines":1,"bbox":[62,70,1138,58]}
+{"kind":"textbox","id":"sh/re9ore1k","slide":5,"text":"A trading agent earns trust by explaining the trades it refuses.","textPreview":"A trading agent earns trust by explaining the trades it refuses.","textChars":64,"textLines":1,"bbox":[64,125,1120,32]}
+{"kind":"shape","id":"sh/0j2p4ji1","slide":5,"bbox":[62,677,1156,1]}
+{"kind":"textbox","id":"sh/1kbqxozm","slide":5,"text":"AURA  /  OKX AGENT TRADE KIT","textPreview":"AURA  /  OKX AGENT TRADE KIT","textChars":28,"textLines":1,"bbox":[62,684,450,18]}
+{"kind":"textbox","id":"sh/ehk72t0v","slide":5,"text":"5 / 5","textPreview":"5 / 5","textChars":5,"textLines":1,"bbox":[1130,684,86,18]}
+{"kind":"shape","id":"sh/zit8vyhg","slide":5,"bbox":[62,196,370,210]}
+{"kind":"textbox","id":"sh/o72p83id","slide":5,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[86,219,80,38]}
+{"kind":"textbox","id":"sh/98bq18zi","slide":5,"text":"BOUNDED AI","textPreview":"BOUNDED AI","textChars":10,"textLines":1,"bbox":[86,266,328,33]}
+{"kind":"textbox","id":"sh/ton2hovq","slide":5,"text":"The LLM challenges a thesis.\nIt never owns trading authority.","textPreview":"The LLM challenges a thesis. | It never owns trading authority.","textChars":61,"textLines":2,"bbox":[86,311,324,68]}
+{"kind":"shape","id":"sh/8nel8ju5","slide":5,"bbox":[452,196,370,210]}
+{"kind":"textbox","id":"sh/7m5kfedk","slide":5,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[476,219,80,38]}
+{"kind":"textbox","id":"sh/mlwj69cz","slide":5,"text":"DETERMINISTIC SAFETY","textPreview":"DETERMINISTIC SAFETY","textChars":20,"textLines":1,"bbox":[476,266,328,33]}
+{"kind":"textbox","id":"sh/hcn2lovm","slide":5,"text":"Hard risk rules decide whether\ncapital can be deployed.","textPreview":"Hard risk rules decide whether | capital can be deployed.","textChars":55,"textLines":2,"bbox":[476,311,324,68]}
+{"kind":"shape","id":"sh/gbelcjuh","slide":5,"bbox":[842,196,370,210]}
+{"kind":"textbox","id":"sh/va5kjedw","slide":5,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[866,219,80,38]}
+{"kind":"textbox","id":"sh/u9w3a9cb","slide":5,"text":"EXPLAINABLE AUTONOMY","textPreview":"EXPLAINABLE AUTONOMY","textChars":20,"textLines":1,"bbox":[866,266,328,33]}
+{"kind":"textbox","id":"sh/xg3294vi","slide":5,"text":"Evidence, rejections and MCP calls\nremain inspectable.","textPreview":"Evidence, rejections and MCP calls | remain inspectable.","textChars":54,"textLines":2,"bbox":[866,311,324,68]}
+{"kind":"shape","id":"sh/cfu10zux","slide":5,"bbox":[62,439,1156,58]}
+{"kind":"textbox","id":"sh/ozylgzmt","slide":5,"text":"BTC + ETH  ·  OKX ATK MCP  ·  Risk Certificate  ·  Decision Provenance  ·  Read/Write isolation","textPreview":"BTC + ETH  ·  OKX ATK MCP  ·  Risk Certificate  ·  Decision Provenance  ·  Read/Write isolation","textChars":95,"textLines":1,"bbox":[82,452,1112,32]}
+{"kind":"textbox","id":"sh/p072p43e","slide":5,"text":"AURA is designed to know when to trade, when not to trade,\nand to explain both.","textPreview":"AURA is designed to know when to trade, when not to trade, | and to explain both.","textChars":79,"textLines":2,"bbox":[62,537,1148,95]}
+{"kind":"notes","id":"nt/jpw5rk","slide":5,"text":"AURA combines bounded AI, deterministic trade safety and decision provenance. It is an MCP-native product: not a black-box strategy. The current safety posture is deliberate. New live entries remain blocked until exchange-side protection is verified end to end. The value is not trading more; it is making market decisions that can be examined and challenged."}

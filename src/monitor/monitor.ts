@@ -17,6 +17,7 @@ function copyPosition(position: OpenPosition | null): OpenPosition | null {
     ...position,
     protectionPlan: { ...position.protectionPlan },
     protection: { ...position.protection },
+    ...(position.attachedProtectionIds ? { attachedProtectionIds: [...position.attachedProtectionIds] } : {}),
   } : null;
 }
 
@@ -148,6 +149,9 @@ export class InMemoryPositionMonitor implements PositionMonitor {
           openedAt: fill.timestamp, updatedAt: fill.timestamp,
           protectionPlan: { ...plan }, protectionMode: policy.protectionMode,
           protection: protectionState(plan, fill.price, fill.timestamp),
+          entryOrderId: fill.exchangeOrderId || null,
+          entryClientOrderId: fill.clientOrderId || null,
+          attachedProtectionIds: [...(policy.entryProtectionIds ?? [])],
         };
       } else {
         const quantity = current.quantity + fill.quantity;
@@ -177,23 +181,9 @@ export class InMemoryPositionMonitor implements PositionMonitor {
       this.realizedPnlToday += realized;
       const remaining = current.quantity - closedQuantity;
       if (remaining <= 1e-12) {
-        const netSinceTracking = current.realizedPnl + realized;
-        const closedTradePnl = current.tradePerformanceComplete ? netSinceTracking : null;
-        const closedTradeOutcomeR = closedTradePnl !== null && current.riskCapital > 0
-          ? closedTradePnl / current.riskCapital : null;
-        this.position = null;
-        this.completedTrades += 1;
-        if (closedTradePnl !== null && closedTradePnl > 0) {
-          this.winningTrades += 1; this.consecutiveWins += 1; this.consecutiveLosses = 0;
-        } else if (closedTradePnl !== null && closedTradePnl < 0) {
-          this.losingTrades += 1; this.consecutiveLosses += 1; this.consecutiveWins = 0;
-        } else if (closedTradePnl === 0) {
-          this.consecutiveWins = 0; this.consecutiveLosses = 0;
-        }
-        this.timestamp = fill.timestamp;
+        const closed = this.finalizeClose(current, realized, fill.timestamp);
         this.seenFills.add(fillKey);
-        this.updateEquityMetrics();
-        return result('APPLIED', closedTradePnl, closedTradeOutcomeR);
+        return result('APPLIED', closed.closedTradePnl, closed.closedTradeOutcomeR);
       }
       const entryFeeBalance = current.entryFeeBalance - entryFeeShare;
       this.position = {
@@ -207,6 +197,47 @@ export class InMemoryPositionMonitor implements PositionMonitor {
     this.seenFills.add(fillKey);
     this.updateEquityMetrics();
     return result('APPLIED');
+  }
+
+  private finalizeClose(current: OpenPosition, realized: number, timestamp: number):
+  { closedTradePnl: number | null; closedTradeOutcomeR: number | null } {
+    const netSinceTracking = current.realizedPnl + realized;
+    const closedTradePnl = current.tradePerformanceComplete ? netSinceTracking : null;
+    const closedTradeOutcomeR = closedTradePnl !== null && current.riskCapital > 0
+      ? closedTradePnl / current.riskCapital : null;
+    this.position = null;
+    this.completedTrades += 1;
+    if (closedTradePnl !== null && closedTradePnl > 0) {
+      this.winningTrades += 1; this.consecutiveWins += 1; this.consecutiveLosses = 0;
+    } else if (closedTradePnl !== null && closedTradePnl < 0) {
+      this.losingTrades += 1; this.consecutiveLosses += 1; this.consecutiveWins = 0;
+    } else if (closedTradePnl === 0) {
+      this.consecutiveWins = 0; this.consecutiveLosses = 0;
+    }
+    this.timestamp = timestamp;
+    this.updateEquityMetrics();
+    return { closedTradePnl, closedTradeOutcomeR };
+  }
+
+  /**
+   * Writes off a remainder smaller than one exchange lot at zero value. Such dust
+   * cannot be sold; it stays in the wallet as unmanaged inventory and the trade
+   * is finalized so the single-position budget is released.
+   */
+  closeResidualDust(symbol: string, maxQuantity: number, timestamp: number): FillProcessingResult {
+    const result = (status: FillProcessingResult['status'], closedTradePnl: number | null = null,
+      closedTradeOutcomeR: number | null = null): FillProcessingResult => ({
+      status, position: copyPosition(this.position), closedTradePnl, closedTradeOutcomeR,
+    });
+    const current = this.position;
+    if (!current || current.symbol !== symbol) return result('NO_MATCHING_POSITION');
+    if (!positive(maxQuantity) || current.quantity >= maxQuantity || !finite(timestamp)
+      || timestamp < this.timestamp) return result('INVALID_FILL');
+    this.rollDay(timestamp);
+    const realized = -current.quantity * current.weightedAverageEntryPrice - current.entryFeeBalance;
+    this.realizedPnlToday += realized;
+    const closed = this.finalizeClose(current, realized, timestamp);
+    return result('APPLIED', closed.closedTradePnl, closed.closedTradeOutcomeR);
   }
 
   updateMark(symbol: string, price: number, timestamp: number): void {
@@ -283,7 +314,13 @@ export class InMemoryPositionMonitor implements PositionMonitor {
       }
       const cash = snapshot.totalEquityUsd - exchangePosition.quantity * reference;
       if (!finite(cash) || cash < 0) return response('INVALID_SNAPSHOT', 'Exchange equity cannot cover marked position');
+      const links = matchingLocal
+        ? { entryOrderId: matchingLocal.entryOrderId ?? null, entryClientOrderId: matchingLocal.entryClientOrderId ?? null,
+          attachedProtectionIds: matchingLocal.attachedProtectionIds ?? [] }
+        : context.exchangeLinks?.[symbol] ?? null;
       restored = {
+        ...(links ? { entryOrderId: links.entryOrderId, entryClientOrderId: links.entryClientOrderId,
+          attachedProtectionIds: [...links.attachedProtectionIds] } : {}),
         symbol, quantity: exchangePosition.quantity,
         weightedAverageEntryPrice: exchangePosition.averageEntryPrice,
         markPrice: reference, referencePrice: reference,

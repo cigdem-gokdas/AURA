@@ -1,0 +1,145 @@
+{"kind":"deck","id":"pr/pwtvks","name":"Deck"}
+{"kind":"layout","layoutId":"f12db2d5-f8b5-4478-8279-bc8e3e1bf81d","name":"Master","type":"master"}
+{"kind":"layout","layoutId":"8b93156e-6322-4796-8193-f52cf61cf4b6","name":"Title Slide","type":"title"}
+{"kind":"slide","id":"sl/f5sv3c","slide":1,"title":"AURA","textShapes":15}
+{"kind":"textbox","id":"sh/sj6t0zal","slide":1,"text":"AURA","textPreview":"AURA","textChars":4,"textLines":1,"bbox":[62,48,300,42]}
+{"kind":"textbox","id":"sh/rids7ut0","slide":1,"text":"Açıklanabilir otonom\nalım-satım ajanı","textPreview":"Açıklanabilir otonom | alım-satım ajanı","textChars":37,"textLines":2,"bbox":[62,113,840,140]}
+{"kind":"textbox","id":"sh/qh4rypsf","slide":1,"text":"BTC-USDT ve ETH-USDT için tek risk bütçesi.\nHer kararda kanıt zinciri ve kesin risk vetosu.","textPreview":"BTC-USDT ve ETH-USDT için tek risk bütçesi. | Her kararda kanıt zinciri ve kesin risk vetosu.","textChars":91,"textLines":2,"bbox":[65,287,750,72]}
+{"kind":"shape","id":"sh/5gva5kba","slide":1,"bbox":[62,402,1156,206]}
+{"kind":"textbox","id":"sh/4fm9wfap","slide":1,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[90,430,60,42]}
+{"kind":"textbox","id":"sh/3eds3at4","slide":1,"text":"KARŞILAŞTIR","textPreview":"KARŞILAŞTIR","textChars":11,"textLines":1,"bbox":[90,486,328,25]}
+{"kind":"textbox","id":"sh/id4rupsj","slide":1,"text":"BTC-USDT  /  ETH-USDT","textPreview":"BTC-USDT  /  ETH-USDT","textChars":21,"textLines":1,"bbox":[90,521,328,43]}
+{"kind":"textbox","id":"sh/hcva1kby","slide":1,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[422,487,40,40]}
+{"kind":"textbox","id":"sh/gr29sfad","slide":1,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[472,430,60,42]}
+{"kind":"textbox","id":"sh/a143yp4j","slide":1,"text":"SORGULA","textPreview":"SORGULA","textChars":7,"textLines":1,"bbox":[472,486,328,25]}
+{"kind":"textbox","id":"sh/b2dk7u5o","slide":1,"text":"Sınırlandırılmış Piyasa Eleştirmeni","textPreview":"Sınırlandırılmış Piyasa Eleştirmeni","textChars":35,"textLines":1,"bbox":[472,521,328,43]}
+{"kind":"textbox","id":"sh/c36l0zm9","slide":1,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[804,487,40,40]}
+{"kind":"textbox","id":"sh/x4f294nu","slide":1,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[854,430,60,42]}
+{"kind":"textbox","id":"sh/2x43up47","slide":1,"text":"ONAYLA","textPreview":"ONAYLA","textChars":6,"textLines":1,"bbox":[854,486,328,25]}
+{"kind":"textbox","id":"sh/nydk3u5s","slide":1,"text":"Deterministik Risk Motoru","textPreview":"Deterministik Risk Motoru","textChars":25,"textLines":1,"bbox":[854,521,328,43]}
+{"kind":"textbox","id":"sh/ozmlwzmd","slide":1,"text":"Yapay zekâ yorumlar; sermayeyi doğrudan hareket ettiremez.","textPreview":"Yapay zekâ yorumlar; sermayeyi doğrudan hareket ettiremez.","textChars":58,"textLines":1,"bbox":[62,630,1100,30]}
+{"kind":"notes","id":"nt/f5sv3c","slide":1,"text":"AURA, BTC-USDT ve ETH-USDT fırsatlarını tek bir yönetilen risk bütçesi için karşılaştırır. Piyasa Eleştirmeni işlemi sorgular; son karar deterministik Risk Motoru’ndadır. Her onay ve ret kanıt zinciriyle açıklanır."}
+{"kind":"slide","id":"sl/iwdwcg","slide":2,"title":"02  /  KARAR SİSTEMİ","textShapes":38}
+{"kind":"textbox","id":"sh/zmloj690","slide":2,"text":"02  /  KARAR SİSTEMİ","textPreview":"02  /  KARAR SİSTEMİ","textChars":20,"textLines":1,"bbox":[62,38,600,24]}
+{"kind":"textbox","id":"sh/knu5cbql","slide":2,"text":"Piyasa verisinden karara","textPreview":"Piyasa verisinden karara","textChars":24,"textLines":1,"bbox":[62,70,1138,58]}
+{"kind":"textbox","id":"sh/lo36lwr6","slide":2,"text":"Tek fırsat değerlendirilir; her aşama emri durdurabilir.","textPreview":"Tek fırsat değerlendirilir; her aşama emri durdurabilir.","textChars":56,"textLines":1,"bbox":[64,125,1120,32]}
+{"kind":"shape","id":"sh/mpcne18r","slide":2,"bbox":[62,677,1156,1]}
+{"kind":"textbox","id":"sh/7qlon69w","slide":2,"text":"AURA  /  OKX AGENT TRADE KIT","textPreview":"AURA  /  OKX AGENT TRADE KIT","textChars":28,"textLines":1,"bbox":[62,684,450,18]}
+{"kind":"textbox","id":"sh/8re5gbqh","slide":2,"text":"2 / 5","textPreview":"2 / 5","textChars":5,"textLines":1,"bbox":[1130,684,86,18]}
+{"kind":"shape","id":"sh/9cn6pgr2","slide":2,"bbox":[62,190,274,136]}
+{"kind":"textbox","id":"sh/udwnil8n","slide":2,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[80,204,42,30]}
+{"kind":"textbox","id":"sh/ve5orq98","slide":2,"text":"OKX ATK MCP","textPreview":"OKX ATK MCP","textChars":11,"textLines":1,"bbox":[80,239,236,30]}
+{"kind":"textbox","id":"sh/zetc3yxg","slide":2,"text":"Piyasa, hesap ve spot okumaları","textPreview":"Piyasa, hesap ve spot okumaları","textChars":31,"textLines":1,"bbox":[80,274,236,42]}
+{"kind":"textbox","id":"sh/ydkvadwv","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[332,240,24,36]}
+{"kind":"shape","id":"sh/lgvu58fm","slide":2,"bbox":[354,190,274,136]}
+{"kind":"textbox","id":"sh/0fmdc3e1","slide":2,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[372,204,42,30]}
+{"kind":"textbox","id":"sh/batczyxk","slide":2,"text":"GÖSTERGELER + REJİM","textPreview":"GÖSTERGELER + REJİM","textChars":19,"textLines":1,"bbox":[372,239,236,30]}
+{"kind":"textbox","id":"sh/q9kv6twz","slide":2,"text":"EMA · ATR · ADX · spread · OBI","textPreview":"EMA · ATR · ADX · spread · OBI","textChars":30,"textLines":1,"bbox":[372,274,236,42]}
+{"kind":"textbox","id":"sh/dcbu18fa","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[624,240,24,36]}
+{"kind":"shape","id":"sh/cb2d83ep","slide":2,"bbox":[646,190,274,136]}
+{"kind":"textbox","id":"sh/v6xwbixo","slide":2,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[664,204,42,30]}
+{"kind":"textbox","id":"sh/a54vixw3","slide":2,"text":"FIRSAT SIRALAMASI","textPreview":"FIRSAT SIRALAMASI","textChars":17,"textLines":1,"bbox":[664,239,236,30]}
+{"kind":"textbox","id":"sh/618fahgb","slide":2,"text":"BTC ve ETH karşılaştırılır","textPreview":"BTC ve ETH karşılaştırılır","textChars":26,"textLines":1,"bbox":[664,274,236,42]}
+{"kind":"textbox","id":"sh/72hg3mhw","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[916,240,24,36]}
+{"kind":"shape","id":"sh/s3qxcryh","slide":2,"bbox":[938,190,274,136]}
+{"kind":"textbox","id":"sh/t4zy5wz2","slide":2,"text":"04","textPreview":"04","textChars":2,"textLines":1,"bbox":[956,204,42,30]}
+{"kind":"textbox","id":"sh/u5sze1gn","slide":2,"text":"PİYASA ELEŞTİRMENİ","textPreview":"PİYASA ELEŞTİRMENİ","textChars":18,"textLines":1,"bbox":[956,239,236,30]}
+{"kind":"textbox","id":"sh/f61g76hs","slide":2,"text":"Seçilen tez sorgulanır","textPreview":"Seçilen tez sorgulanır","textChars":22,"textLines":1,"bbox":[956,274,236,42]}
+{"kind":"shape","id":"sh/g7ahgbyd","slide":2,"bbox":[62,371,274,136]}
+{"kind":"textbox","id":"sh/h8jy9gzy","slide":2,"text":"05","textPreview":"05","textChars":2,"textLines":1,"bbox":[80,385,42,30]}
+{"kind":"textbox","id":"sh/a9of2xg3","slide":2,"text":"RİSK SERTİFİKASI","textPreview":"RİSK SERTİFİKASI","textChars":16,"textLines":1,"bbox":[80,420,236,30]}
+{"kind":"textbox","id":"sh/vaxgv2ho","slide":2,"text":"Kesin veto ve pozisyon boyutu","textPreview":"Kesin veto ve pozisyon boyutu","textChars":29,"textLines":1,"bbox":[80,455,236,42]}
+{"kind":"textbox","id":"sh/x0nax4ni","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[332,421,24,36]}
+{"kind":"shape","id":"sh/cze9ozmx","slide":2,"bbox":[354,371,274,136]}
+{"kind":"textbox","id":"sh/be5svu5c","slide":2,"text":"06","textPreview":"06","textChars":2,"textLines":1,"bbox":[372,385,42,30]}
+{"kind":"textbox","id":"sh/adwrmp4r","slide":2,"text":"MCP İŞLEM","textPreview":"MCP İŞLEM","textChars":9,"textLines":1,"bbox":[372,420,236,30]}
+{"kind":"textbox","id":"sh/l47a1one","slide":2,"text":"Yalnızca ExecutionEngine","textPreview":"Yalnızca ExecutionEngine","textChars":24,"textLines":1,"bbox":[372,455,236,42]}
+{"kind":"textbox","id":"sh/k3y9sjmt","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[624,421,24,36]}
+{"kind":"shape","id":"sh/z2psze5o","slide":2,"bbox":[646,371,274,136]}
+{"kind":"textbox","id":"sh/y1wrq943","slide":2,"text":"07","textPreview":"07","textChars":2,"textLines":1,"bbox":[664,385,42,30]}
+{"kind":"textbox","id":"sh/183apkna","slide":2,"text":"KORUMA","textPreview":"KORUMA","textChars":6,"textLines":1,"bbox":[664,420,236,30]}
+{"kind":"textbox","id":"sh/g7u9gfmp","slide":2,"text":"Doğrula; belirsizlikte dur","textPreview":"Doğrula; belirsizlikte dur","textChars":26,"textLines":1,"bbox":[664,455,236,42]}
+{"kind":"textbox","id":"sh/432d4n6d","slide":2,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[916,421,24,36]}
+{"kind":"shape","id":"sh/5obuxs7y","slide":2,"bbox":[938,371,274,136]}
+{"kind":"textbox","id":"sh/i1kv2do7","slide":2,"text":"08","textPreview":"08","textChars":2,"textLines":1,"bbox":[956,385,42,30]}
+{"kind":"textbox","id":"sh/j2tcvips","slide":2,"text":"MUTABAKAT","textPreview":"MUTABAKAT","textChars":9,"textLines":1,"bbox":[956,420,236,30]}
+{"kind":"textbox","id":"sh/wzid0n61","slide":2,"text":"Belirsizlikte tahmin etme","textPreview":"Belirsizlikte tahmin etme","textChars":25,"textLines":1,"bbox":[956,455,236,42]}
+{"kind":"shape","id":"sh/h0ruts7m","slide":2,"bbox":[62,580,1156,68]}
+{"kind":"textbox","id":"sh/ux0vydob","slide":2,"text":"LLM sorgular","textPreview":"LLM sorgular","textChars":12,"textLines":1,"bbox":[84,597,300,34]}
+{"kind":"textbox","id":"sh/vy9cripw","slide":2,"text":"Risk Motoru veto eder","textPreview":"Risk Motoru veto eder","textChars":21,"textLines":1,"bbox":[448,597,365,34]}
+{"kind":"textbox","id":"sh/8vidw365","slide":2,"text":"Karar izi açıklar","textPreview":"Karar izi açıklar","textChars":17,"textLines":1,"bbox":[867,597,328,34]}
+{"kind":"notes","id":"nt/iwdwcg","slide":2,"text":"OKX Agent Trade Kit piyasa ve hesap verisini sağlar. AURA EMA, ATR, ADX, spread ve emir defteri dengesizliği gibi göstergeleri hesaplar. LLM yalnızca seçilen tezi eleştirir. Risk sertifikası kesin veto yetkisine sahiptir. Belirsiz borsa sonucu kör tekrar yerine mutabakat gerektirir."}
+{"kind":"slide","id":"sl/wailvz","slide":3,"title":"03  /  ÜRÜN DENEYİMİ","textShapes":9}
+{"kind":"textbox","id":"sh/l0rihgja","slide":3,"text":"03  /  ÜRÜN DENEYİMİ","textPreview":"03  /  ÜRÜN DENEYİMİ","textChars":20,"textLines":1,"bbox":[48,29,580,22]}
+{"kind":"textbox","id":"sh/ydgjml0j","slide":3,"text":"AURA Intelligence Desk","textPreview":"AURA Intelligence Desk","textChars":22,"textLines":1,"bbox":[48,61,1000,55]}
+{"kind":"textbox","id":"sh/ze90fq14","slide":3,"text":"Kendi dashboard’ımızdan gerçek ekran kesitleri · canlı demo gerektirmeyen ürün turu","textPreview":"Kendi dashboard’ımızdan gerçek ekran kesitleri · canlı demo gerektirmeyen ürün turu","textChars":83,"textLines":1,"bbox":[50,113,1150,28]}
+{"kind":"shape","id":"sh/83i1svil","slide":3,"bbox":[47,154,1186,515]}
+{"kind":"textbox","id":"sh/94ril0j6","slide":3,"text":"FIRSAT PANOSU  ·  BTC / ETH","textPreview":"FIRSAT PANOSU  ·  BTC / ETH","textChars":27,"textLines":1,"bbox":[64,168,690,22]}
+{"kind":"textbox","id":"sh/m10jql0v","slide":3,"text":"ELEŞTİRMEN  /  RİSK","textPreview":"ELEŞTİRMEN  /  RİSK","textChars":19,"textLines":1,"bbox":[768,168,445,22]}
+{"kind":"textbox","id":"sh/lobap0ju","slide":3,"text":"MCP ÇAĞRI İZİ  /  KARAR KANITI","textPreview":"MCP ÇAĞRI İZİ  /  KARAR KANITI","textChars":30,"textLines":1,"bbox":[64,459,675,20]}
+{"kind":"textbox","id":"sh/kni9gvi9","slide":3,"text":"POZİSYON  /  AÇIKLAMA","textPreview":"POZİSYON  /  AÇIKLAMA","textChars":21,"textLines":1,"bbox":[768,459,445,20]}
+{"kind":"textbox","id":"sh/8r2tkvil","slide":3,"text":"Gerçek ekran görüntüsü · çekim anındaki durum · koruma etiketi bağımsız doğrulama değildir","textPreview":"Gerçek ekran görüntüsü · çekim anındaki durum · koruma etiketi bağımsız doğrulama değildir","textChars":90,"textLines":1,"bbox":[51,683,1080,20]}
+{"kind":"textbox","id":"sh/7qtsrq10","slide":3,"text":"3 / 5","textPreview":"3 / 5","textChars":5,"textLines":1,"bbox":[1138,683,78,20]}
+{"kind":"image","id":"im/614ju1cf","slide":3,"name":"","geometry":"roundRect","alt":"AURA dashboard gerçek ekran görüntüsü: markets","bbox":[62,201,675,253]}
+{"kind":"image","id":"im/98ridcv2","slide":3,"name":"","geometry":"roundRect","alt":"AURA dashboard gerçek ekran görüntüsü: critic","bbox":[748,201,225,214]}
+{"kind":"image","id":"im/87i1k7uh","slide":3,"name":"","geometry":"roundRect","alt":"AURA dashboard gerçek ekran görüntüsü: risk","bbox":[982,201,235,198]}
+{"kind":"image","id":"im/ojmtc7ax","slide":3,"name":"","geometry":"roundRect","alt":"AURA dashboard gerçek ekran görüntüsü: mcp","bbox":[62,482,675,174]}
+{"kind":"image","id":"im/9kvulcri","slide":3,"name":"","geometry":"roundRect","alt":"AURA dashboard gerçek ekran görüntüsü: position","bbox":[748,482,469,135]}
+{"kind":"image","id":"im/al4bexs3","slide":3,"name":"","geometry":"roundRect","alt":"AURA dashboard gerçek ekran görüntüsü: ask","bbox":[748,625,469,31]}
+{"kind":"notes","id":"nt/wailvz","slide":3,"text":"Bu slayt AURA dashboard’ının gerçek ekran görüntülerinden oluşturulmuştur. Sol üstte BTC ve ETH fırsat panosunu; sağda Market Critic ile risk sertifikasını görüyoruz. Sol altta OKX ATK MCP çağrıları okunabilir: çağrı türü, sembol ve başarı durumu görünür. Sağ altta pozisyon ve Ask AURA alanları yer alır. Bu ekran bir işlem performansı kanıtı değildir. Dashboard üzerindeki koruma etiketi de borsa tarafındaki korumanın bağımsız doğrulaması olarak yorumlanmamalıdır."}
+{"kind":"slide","id":"sl/flti6f","slide":4,"title":"04  /  MCP + GÜVENLİK","textShapes":23}
+{"kind":"textbox","id":"sh/xwbut8be","slide":4,"text":"04  /  MCP + GÜVENLİK","textPreview":"04  /  MCP + GÜVENLİK","textChars":21,"textLines":1,"bbox":[62,38,600,24]}
+{"kind":"textbox","id":"sh/qtkbytc3","slide":4,"text":"Ayrı yetki, görünür kanıt","textPreview":"Ayrı yetki, görünür kanıt","textChars":25,"textLines":1,"bbox":[62,70,1138,58]}
+{"kind":"textbox","id":"sh/butcryto","slide":4,"text":"AURA, OKX ATK istemcisi ve salt okunur Status MCP sunucusudur.","textPreview":"AURA, OKX ATK istemcisi ve salt okunur Status MCP sunucusudur.","textChars":62,"textLines":1,"bbox":[64,125,1120,32]}
+{"kind":"shape","id":"sh/or2tw3ux","slide":4,"bbox":[62,677,1156,1]}
+{"kind":"textbox","id":"sh/psbap8bi","slide":4,"text":"AURA  /  OKX AGENT TRADE KIT","textPreview":"AURA  /  OKX AGENT TRADE KIT","textChars":28,"textLines":1,"bbox":[62,684,450,18]}
+{"kind":"textbox","id":"sh/2p0butcr","slide":4,"text":"4 / 5","textPreview":"4 / 5","textChars":5,"textLines":1,"bbox":[1130,684,86,18]}
+{"kind":"shape","id":"sh/3q9snytc","slide":4,"bbox":[62,187,341,289]}
+{"kind":"textbox","id":"sh/g3itsjul","slide":4,"text":"READ MCP SÜRECİ","textPreview":"READ MCP SÜRECİ","textChars":15,"textLines":1,"bbox":[86,210,290,34]}
+{"kind":"textbox","id":"sh/1oralob6","slide":4,"text":"piyasa  ·  hesap  ·  spot okuma","textPreview":"piyasa  ·  hesap  ·  spot okuma","textChars":31,"textLines":1,"bbox":[86,257,290,30]}
+{"kind":"shape","id":"sh/1gbax83q","slide":4,"bbox":[86,319,260,28]}
+{"kind":"textbox","id":"sh/0f29o325","slide":4,"text":"SUNUCU DÜZEYİNDE SALT OKUMA","textPreview":"SUNUCU DÜZEYİNDE SALT OKUMA","textChars":27,"textLines":1,"bbox":[96,321,240,24]}
+{"kind":"textbox","id":"sh/fetsvilk","slide":4,"text":"Piyasa kanıtı ve borsa verisi","textPreview":"Piyasa kanıtı ve borsa verisi","textChars":29,"textLines":1,"bbox":[86,369,285,46]}
+{"kind":"textbox","id":"sh/ed0rmdkz","slide":4,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[405,296,60,60]}
+{"kind":"shape","id":"sh/dcrat83u","slide":4,"bbox":[470,187,341,289]}
+{"kind":"textbox","id":"sh/sbi9k329","slide":4,"text":"AURA","textPreview":"AURA","textChars":4,"textLines":1,"bbox":[496,210,292,39]}
+{"kind":"textbox","id":"sh/ra98rylo","slide":4,"text":"Göstergeler  →  Eleştirmen  →  Risk","textPreview":"Göstergeler  →  Eleştirmen  →  Risk","textChars":35,"textLines":1,"bbox":[496,265,287,39]}
+{"kind":"shape","id":"sh/q90ritk3","slide":4,"bbox":[493,331,296,70]}
+{"kind":"textbox","id":"sh/5orqpo3i","slide":4,"text":"RİSK SERTİFİKASI","textPreview":"RİSK SERTİFİKASI","textChars":16,"textLines":1,"bbox":[507,340,275,23]}
+{"kind":"textbox","id":"sh/4ni9gj2x","slide":4,"text":"Son işlem vetosu","textPreview":"Son işlem vetosu","textChars":16,"textLines":1,"bbox":[507,368,260,23]}
+{"kind":"textbox","id":"sh/wr29c3at","slide":4,"text":"→","textPreview":"→","textChars":1,"textLines":1,"bbox":[815,296,60,60]}
+{"kind":"shape","id":"sh/hsva58be","slide":4,"bbox":[880,187,338,289]}
+{"kind":"textbox","id":"sh/upkratsn","slide":4,"text":"WRITE MCP SÜRECİ","textPreview":"WRITE MCP SÜRECİ","textChars":16,"textLines":1,"bbox":[904,210,296,34]}
+{"kind":"textbox","id":"sh/vqts3yt8","slide":4,"text":"yalnızca spot işlem","textPreview":"yalnızca spot işlem","textChars":19,"textLines":1,"bbox":[904,257,284,30]}
+{"kind":"shape","id":"sh/83298jax","slide":4,"bbox":[904,319,254,28]}
+{"kind":"textbox","id":"sh/9oba1obi","slide":4,"text":"YALNIZCA EXECUTIONENGINE","textPreview":"YALNIZCA EXECUTIONENGINE","textChars":24,"textLines":1,"bbox":[914,321,234,24]}
+{"kind":"textbox","id":"sh/m1kr69sr","slide":4,"text":"LLM için yazma yetkisi yok","textPreview":"LLM için yazma yetkisi yok","textChars":26,"textLines":1,"bbox":[904,369,275,42]}
+{"kind":"shape","id":"sh/72tszetc","slide":4,"bbox":[62,504,1156,136]}
+{"kind":"textbox","id":"sh/sz69kna1","slide":4,"text":"TEK YÖNETİLEN POZİSYON","textPreview":"TEK YÖNETİLEN POZİSYON","textChars":22,"textLines":1,"bbox":[84,523,370,26]}
+{"kind":"textbox","id":"sh/tkfadsbm","slide":4,"text":"KÖR TEKRAR YOK","textPreview":"KÖR TEKRAR YOK","textChars":14,"textLines":1,"bbox":[482,523,270,26]}
+{"kind":"textbox","id":"sh/3ehc3mdo","slide":4,"text":"BELİRSİZLİK → MUTABAKAT","textPreview":"BELİRSİZLİK → MUTABAKAT","textChars":23,"textLines":1,"bbox":[824,523,360,26]}
+{"kind":"textbox","id":"sh/2t8vahc3","slide":4,"text":"Yönetilmeyen cüzdan varlığı ayrıdır. LLM kesintisi yeni girişleri durdurur; koruma kuralları deterministiktir.","textPreview":"Yönetilmeyen cüzdan varlığı ayrıdır. LLM kesintisi yeni girişleri durdurur; koruma kuralları deterministiktir.","textChars":110,"textLines":1,"bbox":[84,577,1098,48]}
+{"kind":"notes","id":"nt/flti6f","slide":4,"text":"READ ve WRITE iki ayrı MCP süreci ve yetki alanıdır. Piyasa Eleştirmeni yazma istemcisine erişemez; WRITE yalnızca ExecutionEngine tarafından kullanılır. AURA ayrıca dış gözlemciler için salt okunur Status MCP sunar. Yönetilmeyen cüzdan varlığı, AURA pozisyonu sayılmaz. Koruma veya işlem sonucu belirsizse sistem durur. Yeni canlı BUY emirleri, borsa tarafı koruma uçtan uca doğrulanana kadar engellenmiştir."}
+{"kind":"slide","id":"sl/c094tj","slide":5,"title":"05  /  NEDEN AURA","textShapes":16}
+{"kind":"textbox","id":"sh/u5w7mpsj","slide":5,"text":"05  /  NEDEN AURA","textPreview":"05  /  NEDEN AURA","textChars":17,"textLines":1,"bbox":[62,38,600,24]}
+{"kind":"textbox","id":"sh/1s7qx4bu","slide":5,"text":"Sınırları belli otonomi","textPreview":"Sınırları belli otonomi","textChars":23,"textLines":1,"bbox":[62,70,1138,58]}
+{"kind":"textbox","id":"sh/grepozap","slide":5,"text":"Güven, reddedilen işlemleri de açıklayabilmekle başlar.","textPreview":"Güven, reddedilen işlemleri de açıklayabilmekle başlar.","textChars":55,"textLines":1,"bbox":[64,125,1120,32]}
+{"kind":"shape","id":"sh/7258ruts","slide":5,"bbox":[62,677,1156,1]}
+{"kind":"textbox","id":"sh/61w7ips7","slide":5,"text":"AURA  /  OKX AGENT TRADE KIT","textPreview":"AURA  /  OKX AGENT TRADE KIT","textChars":28,"textLines":1,"bbox":[62,684,450,18]}
+{"kind":"textbox","id":"sh/t4nqt4by","slide":5,"text":"5 / 5","textPreview":"5 / 5","textChars":5,"textLines":1,"bbox":[1130,684,86,18]}
+{"kind":"shape","id":"sh/s3epkzad","slide":5,"bbox":[62,196,370,210]}
+{"kind":"textbox","id":"sh/byp83etc","slide":5,"text":"01","textPreview":"01","textChars":2,"textLines":1,"bbox":[86,219,80,38]}
+{"kind":"textbox","id":"sh/qxgru9sr","slide":5,"text":"SINIRLI YAPAY ZEKÂ","textPreview":"SINIRLI YAPAY ZEKÂ","textChars":18,"textLines":1,"bbox":[86,266,328,33]}
+{"kind":"textbox","id":"sh/0ny5gvuh","slide":5,"text":"LLM işlem tezini sorgular.\nAlım-satım yetkisi onda değildir.","textPreview":"LLM işlem tezini sorgular. | Alım-satım yetkisi onda değildir.","textChars":60,"textLines":2,"bbox":[86,311,324,68]}
+{"kind":"shape","id":"sh/1o7m90v2","slide":5,"bbox":[452,196,370,210]}
+{"kind":"textbox","id":"sh/elgne5cb","slide":5,"text":"02","textPreview":"02","textChars":2,"textLines":1,"bbox":[476,219,80,38]}
+{"kind":"textbox","id":"sh/zmp47adw","slide":5,"text":"DETERMİNİSTİK GÜVENLİK","textPreview":"DETERMİNİSTİK GÜVENLİK","textChars":22,"textLines":1,"bbox":[476,266,328,33]}
+{"kind":"textbox","id":"sh/czylcvu5","slide":5,"text":"Sermayenin kullanılıp kullanılmayacağına\nkesin risk kuralları karar verir.","textPreview":"Sermayenin kullanılıp kullanılmayacağına | kesin risk kuralları karar verir.","textChars":74,"textLines":2,"bbox":[476,311,324,68]}
+{"kind":"shape","id":"sh/dk7m50vq","slide":5,"bbox":[842,196,370,210]}
+{"kind":"textbox","id":"sh/qxg3alcf","slide":5,"text":"03","textPreview":"03","textChars":2,"textLines":1,"bbox":[866,219,80,38]}
+{"kind":"textbox","id":"sh/ryp43qdk","slide":5,"text":"AÇIKLANABİLİR OTONOMİ","textPreview":"AÇIKLANABİLİR OTONOMİ","textChars":21,"textLines":1,"bbox":[866,266,328,33]}
+{"kind":"textbox","id":"sh/4vel8bu9","slide":5,"text":"Kanıt, ret gerekçesi ve MCP çağrıları\nincelenebilir.","textPreview":"Kanıt, ret gerekçesi ve MCP çağrıları | incelenebilir.","textChars":52,"textLines":2,"bbox":[866,311,324,68]}
+{"kind":"shape","id":"sh/pwnm1gvu","slide":5,"bbox":[62,439,1156,58]}
+{"kind":"textbox","id":"sh/5sf25cni","slide":5,"text":"BTC + ETH  ·  OKX ATK MCP  ·  Risk Sertifikası  ·  Karar İzi  ·  Read/Write ayrımı","textPreview":"BTC + ETH  ·  OKX ATK MCP  ·  Risk Sertifikası  ·  Karar İzi  ·  Read/Write ayrımı","textChars":82,"textLines":1,"bbox":[82,452,1112,32]}
+{"kind":"textbox","id":"sh/kr61c76x","slide":5,"text":"AURA ne zaman işlem yapacağını, ne zaman duracağını\nve ikisini de nasıl açıklayacağını bilir.","textPreview":"AURA ne zaman işlem yapacağını, ne zaman duracağını | ve ikisini de nasıl açıklayacağını bilir.","textChars":93,"textLines":2,"bbox":[62,537,1148,95]}
+{"kind":"notes","id":"nt/c094tj","slide":5,"text":"AURA’nın farkı sınırları açık otonomidir: LLM yorumlar ama işlem yapamaz; risk kuralları son kararı verir; kanıt ve ret gerekçesi görünürdür. Doğrulanmış canlı kârlılık iddiasında bulunmuyoruz. Yeni canlı girişler, borsa tarafı koruma doğrulanana kadar kapalıdır."}

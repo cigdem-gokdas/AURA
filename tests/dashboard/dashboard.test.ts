@@ -325,9 +325,9 @@ describe('read-only view models', () => {
     expect(one.points).toHaveLength(0);
     const chart = equityChart(
       [
-        { timestamp: 3, equity: 10200, dailyPnl: 200, drawdownPct: 0 },
-        { timestamp: 1, equity: 10000, dailyPnl: 0, drawdownPct: 0 },
-        { timestamp: 2, equity: 10100, dailyPnl: 100, drawdownPct: 0 },
+        { timestamp: 3, equity: 10200, dailyPnl: 200, drawdownPct: 0, profile: 'demo' },
+        { timestamp: 1, equity: 10000, dailyPnl: 0, drawdownPct: 0, profile: 'demo' },
+        { timestamp: 2, equity: 10100, dailyPnl: 100, drawdownPct: 0, profile: 'demo' },
       ],
       10000,
     );

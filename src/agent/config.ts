@@ -7,6 +7,10 @@ export interface AgentConfig {
   profile: 'demo' | 'live';
   connectorMode: 'mcp';
   liveTradingArmed: boolean;
+  /** Demo smoke requires the literal disabled arm flag, not an omitted value. */
+  demoSmokeArmFlagExplicitlyFalse: boolean;
+  /** Human attestation that the production attached TP/SL path passed the demo verifier. Default false. */
+  liveEntryProtectionVerified: boolean;
   primaryBar: string;
   slowLoopIntervalMs: number;
   fastLoopIntervalMs: number;
@@ -54,11 +58,16 @@ export function agentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AgentC
   if (env.LIVE_TRADING_ARMED !== undefined && env.LIVE_TRADING_ARMED !== 'true' && env.LIVE_TRADING_ARMED !== 'false')
     throw new Error('LIVE_TRADING_ARMED must be true or false');
   if (env.PRIMARY_BAR !== undefined && env.PRIMARY_BAR !== '3m') throw new Error('PRIMARY_BAR must be 3m');
+  if (env.LIVE_ENTRY_PROTECTION_VERIFIED !== undefined && env.LIVE_ENTRY_PROTECTION_VERIFIED !== 'true'
+    && env.LIVE_ENTRY_PROTECTION_VERIFIED !== 'false')
+    throw new Error('LIVE_ENTRY_PROTECTION_VERIFIED must be true or false');
   if (env.ATK_CONTEXT_PULSE !== undefined && env.ATK_CONTEXT_PULSE !== 'true' && env.ATK_CONTEXT_PULSE !== 'false')
     throw new Error('ATK_CONTEXT_PULSE must be true or false');
   return {
     symbols, profile: env.OKX_PROFILE, connectorMode: 'mcp',
-    liveTradingArmed: env.LIVE_TRADING_ARMED === 'true', primaryBar: '3m',
+    liveTradingArmed: env.LIVE_TRADING_ARMED === 'true',
+    demoSmokeArmFlagExplicitlyFalse: env.LIVE_TRADING_ARMED === 'false',
+    liveEntryProtectionVerified: env.LIVE_ENTRY_PROTECTION_VERIFIED === 'true', primaryBar: '3m',
     slowLoopIntervalMs: positiveInteger(env.SLOW_LOOP_INTERVAL_MS, 180_000, 'SLOW_LOOP_INTERVAL_MS'),
     fastLoopIntervalMs: positiveInteger(env.FAST_LOOP_INTERVAL_MS ?? env.SAFETY_LOOP_MS, 7_000, 'FAST_LOOP_INTERVAL_MS'),
     maxReconnectAttempts: positiveInteger(env.MAX_RECONNECT_ATTEMPTS, 3, 'MAX_RECONNECT_ATTEMPTS'),

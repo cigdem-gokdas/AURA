@@ -8,6 +8,9 @@ export interface ExecutionTools {
   getFills: string | null;
   getAlgoOrders: string | null;
   placeAlgoOrder: string | null;
+  algoClientOrderIdSupported: boolean;
+  cancelOrder: string | null;
+  cancelAlgoOrder: string | null;
   conditionalProtectionSupported: boolean;
   ocoProtectionSupported: boolean;
   getBalance: string | null;
@@ -49,6 +52,8 @@ export function discoverExecutionTools(definitions: readonly OkxToolDefinition[]
   const getFills = byName.get('spot_get_fills');
   const getAlgoOrders = byName.get('spot_get_algo_orders');
   const placeAlgoOrder = byName.get('spot_place_algo_order');
+  const cancelOrder = byName.get('spot_cancel_order');
+  const cancelAlgoOrder = byName.get('spot_cancel_algo_order');
   const getBalance = byName.get('account_get_balance');
   const getTradeFee = byName.get('account_get_trade_fee');
   return {
@@ -58,6 +63,9 @@ export function discoverExecutionTools(definitions: readonly OkxToolDefinition[]
     getFills: has(getFills, 'instId') ? getFills!.name : null,
     getAlgoOrders: has(getAlgoOrders, 'status', 'instId') ? getAlgoOrders!.name : null,
     placeAlgoOrder: has(placeAlgoOrder, 'instId', 'side', 'ordType', 'sz') ? placeAlgoOrder!.name : null,
+    algoClientOrderIdSupported: has(placeAlgoOrder, 'tdMode', 'algoClOrdId'),
+    cancelOrder: has(cancelOrder, 'instId', 'ordId') ? cancelOrder!.name : null,
+    cancelAlgoOrder: has(cancelAlgoOrder, 'instId', 'algoId') ? cancelAlgoOrder!.name : null,
     conditionalProtectionSupported: has(placeAlgoOrder, 'instId', 'side', 'ordType', 'sz', 'slTriggerPx', 'slOrdPx')
       && allows(placeAlgoOrder, 'ordType', 'conditional'),
     ocoProtectionSupported: has(placeAlgoOrder, 'instId', 'side', 'ordType', 'sz', 'tpTriggerPx', 'tpOrdPx', 'slTriggerPx', 'slOrdPx')

@@ -521,16 +521,23 @@ export function Critic({
           Risk flag <b>{label(s?.functional.llm?.riskFlag)}</b>
         </span>
         <span>
-          Setup quality <b>{setupQuality ?? 'Not published'}</b>
+          Setup quality{' '}
+          <b>{s?.functional.llm?.setupQuality ?? setupQuality ?? '—'}</b>
         </span>
         <span>
-          Confidence <b>Not published</b>
+          Confidence{' '}
+          <b>
+            {s?.functional.llm?.confidence == null
+              ? '—'
+              : pct(s.functional.llm.confidence * 100)}
+          </b>
         </span>
         <span>
-          Regime confirmation <b>Not published</b>
+          Regime confirmation{' '}
+          <b>{label(s?.functional.llm?.regimeConfirmation)}</b>
         </span>
-        <span>
-          Short reason <b>Not published</b>
+        <span className="critic-reason">
+          Short reason <b>{s?.functional.llm?.reason ?? '—'}</b>
         </span>
       </div>
       <div className="evidence">
@@ -745,7 +752,13 @@ export function Mcp({ data }: { data: DashboardState }) {
                   <span className="source">ATK WRITE</span>
                   <div>
                     <strong>Execution</strong>
-                    <small>Risk did not reach write authority</small>
+                    <small>
+                      {path.nodes.some((n) =>
+                        n.description.includes('observe-only'),
+                      )
+                        ? 'Observe-only mode: analysis complete, execution withheld'
+                        : 'Risk did not reach write authority'}
+                    </small>
                   </div>
                   <b>NOT CALLED</b>
                 </div>
@@ -815,11 +828,23 @@ export function Position({ s }: { s: JudgeSnapshot | null }) {
               </div>
               <div>
                 <span>Realized / unrealized PnL</span>
-                <strong>Not published</strong>
+                <strong>
+                  {money(p.realizedPnl)} / {money(p.unrealizedPnl)}
+                </strong>
               </div>
               <div>
                 <span>Break-even / trailing state</span>
-                <strong>Not published</strong>
+                <strong>
+                  {p.breakEvenActivated == null
+                    ? '—'
+                    : `${p.breakEvenActivated ? 'BREAK-EVEN ON' : 'BREAK-EVEN OFF'} · ${
+                        p.trailingActivated ? 'TRAILING ON' : 'TRAILING OFF'
+                      }`}
+                </strong>
+              </div>
+              <div>
+                <span>Take-profit reference</span>
+                <strong>{money(p.takeProfitPrice)}</strong>
               </div>
             </div>
           </>

@@ -1,6 +1,7 @@
 import type { OkxConnector } from '../okx/connector.js';
 import { OkxConnectorError } from '../okx/types.js';
 import { canonicalToolName, type AtkCapability } from '../okx/capabilities.js';
+import { normalizeOkxFillIdentity } from '../okx/fill.js';
 import type {
   Candle,
   InstrumentMeta,
@@ -235,6 +236,7 @@ export class OkxMarketAdapter implements MarketAdapter {
     return {
       symbol,
       instrumentId: text(row.instId, 'instrument ID'),
+      ...(typeof row.state === 'string' ? { state: row.state } : {}),
       minOrderSize: numeric(row.minSz, 'minimum order size', Number.EPSILON),
       quantityStep: numeric(row.lotSz, 'lot size', Number.EPSILON),
       tickSize: numeric(row.tickSz, 'tick size', Number.EPSILON),
@@ -339,14 +341,15 @@ export class OkxMarketAdapter implements MarketAdapter {
       matchingSymbol(row, symbol);
       return {
         symbol,
-        fillId: text(row.fillId, 'fill ID'),
+        ...normalizeOkxFillIdentity(row),
         orderId: text(row.ordId, 'order ID'),
+        clientOrderId: row.clOrdId == null || row.clOrdId === '' ? null : text(row.clOrdId, 'client order ID'),
         side: side(row.side),
         quantity: numeric(row.fillSz, 'fill quantity', Number.EPSILON),
         price: numeric(row.fillPx, 'fill price', Number.EPSILON),
         fee: numeric(row.fee, 'fill fee'),
         feeCurrency: text(row.feeCcy, 'fill fee currency'),
-        timestamp: timestamp(row.ts, 'fill timestamp'),
+        timestamp: timestamp(row.fillTime ?? row.ts, 'fill timestamp'),
       };
     });
   }

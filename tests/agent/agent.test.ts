@@ -4,9 +4,9 @@ import { agentConfigFromEnv, parseSymbols } from '../../src/agent/config.js';
 import type { ExecutionEngine, StartupExchangeSnapshot } from '../../src/execution/types.js';
 import type { FeatureSnapshot } from '../../src/features/types.js';
 import type { LlmClient } from '../../src/llm/types.js';
-import type { MarketAdapter } from '../../src/market/types.js';
+import type { MarketAdapter, RecentSpotFill } from '../../src/market/types.js';
 import type { OkxConnector } from '../../src/okx/connector.js';
-import type { ProtectionPlan } from '../../src/risk/types.js';
+import type { ApprovedOrderPlan, ProtectionPlan } from '../../src/risk/types.js';
 import type { CandidateSignal } from '../../src/signal/types.js';
 import type { AtkToolTrace } from '../../src/okx/telemetry.js';
 import { createProductionAgent } from '../../src/main.js';
@@ -116,6 +116,9 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
       clientOrderId: request.clientOrderId, cycleId: request.cycleId, decisionId: request.decisionId,
       order: null, position: null, reconciled: false, reason: 'not found', timestamp: NOW })),
     getStartupSnapshot: vi.fn(async () => snapshot),
+    getPendingProtection: vi.fn(async () => []),
+    cancelAttachedProtection: vi.fn(async link => ({ status: 'CANCELLED' as const,
+      protectionIds: [...link.protectionIds], reason: 'test cancellation' })),
   };
   const llm: LlmClient = { evaluateSelectedCandidate: vi.fn(async () => options.llmFailure
     ? { status: 'TIMEOUT' as const } : { status: 'SUCCESS' as const,
@@ -125,6 +128,7 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCostUsd: 0 } }) };
   const evaluated: string[] = [];
   const deps: AgentDependencies = { connector, market, execution, llm, now: () => NOW,
+    smokeRecovery: { begin: async () => undefined, clear: async () => undefined },
     evaluateSymbol: vi.fn(async symbol => { evaluated.push(symbol);
       if (options.evaluationDelay) await options.evaluationDelay;
       return evaluation(symbol, options.scores?.[symbol] ?? 80, options.edges?.[symbol] ?? 3); }),
@@ -198,6 +202,9 @@ describe('AURA orchestration', () => {
     expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
     expect(vi.mocked(h.llm.evaluateSelectedCandidate).mock.calls[0]?.[0].candidate.symbol).toBe(selected);
     expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
+    const entryId = vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0].clientOrderId;
+    expect(entryId).toMatch(/^AURAENTRY[0-9a-f]{22}$/);
+    expect(entryId).toMatch(/^[A-Za-z0-9]{1,32}$/);
     await h.agent.shutdown();
   });
 
@@ -242,6 +249,8 @@ describe('AURA orchestration', () => {
     await h.agent.runFastCycle();
     expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
     expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0].side).toBe('SELL');
+    expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0].clientOrderId)
+      .toMatch(/^AURAEXIT[0-9a-f]{22}$/);
     expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
     await h.agent.runFastCycle();
     expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
@@ -274,6 +283,17 @@ describe('AURA orchestration', () => {
       expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
       await h.agent.shutdown();
     }
+  });
+
+  it('blocks armed live readiness when the execution adapter cannot verify entry protection', async () => {
+    const h = harness();
+    h.execution.liveEntryProtectionReady = () => false;
+    const report = await h.agent.preflight();
+    expect(report.readiness).toBe('BLOCKED');
+    expect(report.checks.find(check => check.name === 'LIVE_ENTRY_PROTECTION')?.passed).toBe(false);
+    expect(h.agent.activate()).toBe(false);
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
   });
 
   it('degrades on connector loss, blocks new entry, and disconnects on shutdown', async () => {
@@ -460,6 +480,105 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
+  it('refuses demo smoke when LIVE_TRADING_ARMED is true before any WRITE placement', async () => {
+    const h = harness({ profile: 'demo', armed: true });
+    expect((await h.agent.demoSmoke()).passed).toBe(false);
+    expect(h.execution.start).not.toHaveBeenCalled();
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
+  });
+
+  it('refuses demo smoke when the resolved MCP server does not confirm demo mode', async () => {
+    const h = harness({ profile: 'demo', armed: false });
+    Object.defineProperty(h.connector, 'readOnly', { value: true });
+    h.execution.verifyDemoRuntime = vi.fn(async () => false);
+    h.execution.runDemoSmoke = vi.fn(async () => { throw new Error('must not execute'); });
+    const result = await h.agent.demoSmoke();
+    expect(result.passed).toBe(false);
+    expect(result.reason).toContain('demo=true');
+    expect(h.execution.runDemoSmoke).not.toHaveBeenCalled();
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
+  });
+
+  it('routes an ETH infrastructure smoke through the isolated execution port without a strategy signal', async () => {
+    const h = harness({ profile: 'demo', armed: false });
+    Object.defineProperty(h.connector, 'readOnly', { value: true });
+    h.snapshot.positions = [
+      { symbol: 'BTC-USDT', quantity: 2, averageEntryPrice: 100, updatedAt: NOW },
+      { symbol: 'ETH-USDT', quantity: 3, averageEntryPrice: 100, updatedAt: NOW },
+    ];
+    h.market.getOrderBook = vi.fn(async symbol => ({ symbol, timestamp: NOW,
+      bids: [{ price: 99.99, size: 1 }], asks: [{ price: 100.01, size: 1 }] }));
+    h.market.getInstrumentMeta = vi.fn(async symbol => ({ symbol, instrumentId: symbol,
+      state: 'live', minOrderSize: 0.00001, quantityStep: 0.00001, tickSize: 0.01 }));
+    h.execution.verifyDemoRuntime = vi.fn(async () => true);
+    h.execution.runDemoSmoke = vi.fn(async request => ({ status: 'PASS' as const,
+      entryState: 'CLOSED' as const, writeDiagnostic: null,
+      reason: 'reconciled', symbol: request.symbol, clientOrderId: request.entryClientOrderId,
+      orderId: 'entry', confirmedFilledQuantity: request.quantity, entryAverageFillPrice: 100,
+      entryFeeAmount: 0, entryFeeCurrency: 'USDT', netOwnedBase: request.quantity,
+      protectionTest: 'UNAVAILABLE' as const, protectionId: null, exitOrderId: 'exit',
+      dustQuantity: 0, auraManagedActivePositionCount: 0 }));
+    const notices: string[] = [];
+    const agent = new AuraAgent(agentConfigFromEnv(env('demo', 'false')), {
+      connector: h.connector, market: h.market, execution: h.execution, llm: h.llm,
+      now: () => NOW, demoSmokeNotice: line => notices.push(line),
+      smokeRecovery: { begin: vi.fn(async () => undefined), clear: vi.fn(async () => undefined) },
+      startupContext: (snapshot, references) => ({ referencePrices: references,
+        openedAtBySymbol: {}, protectionPlans: {}, protectionModes: {},
+        managedPositions: [], unmanagedInventory: snapshot.positions }),
+    });
+    const result = await agent.demoSmoke();
+    expect(result.passed).toBe(true);
+    const request = vi.mocked(h.execution.runDemoSmoke).mock.calls[0]?.[0];
+    expect(request?.symbol).toBe('ETH-USDT');
+    expect(request?.entryClientOrderId).toMatch(/^AURASMOKE[0-9a-f]{22}$/);
+    expect(request?.protectionClientOrderId).toMatch(/^AURAPROT[0-9a-f]{22}$/);
+    expect(request?.exitClientOrderId).toMatch(/^AURAEXIT[0-9a-f]{22}$/);
+    expect(new Set([request?.cycleId, request?.decisionId, request?.entryClientOrderId,
+      request?.protectionClientOrderId, request?.exitClientOrderId]).size).toBe(5);
+    expect(notices[0]).toContain('approximate_notional_usdt=');
+    expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    expect(agent.getJudgeSnapshot()?.atk.latestProvenance?.summary?.setupType).toBe('DEMO_SMOKE');
+    await agent.shutdown();
+  });
+
+  it('clears only a not-accepted smoke marker without creating a managed position', async () => {
+    const h = harness({ profile: 'demo', armed: false });
+    Object.defineProperty(h.connector, 'readOnly', { value: true });
+    h.market.getOrderBook = vi.fn(async symbol => ({ symbol, timestamp: NOW,
+      bids: [{ price: 99.99, size: 1 }], asks: [{ price: 100.01, size: 1 }] }));
+    h.market.getInstrumentMeta = vi.fn(async symbol => ({ symbol, instrumentId: symbol,
+      state: 'live', minOrderSize: 0.00001, quantityStep: 0.00001, tickSize: 0.01 }));
+    h.execution.verifyDemoRuntime = vi.fn(async () => true);
+    h.execution.runDemoSmoke = vi.fn(async request => ({ status: 'ENTRY_NOT_ACCEPTED' as const,
+      entryState: 'NOT_FOUND' as const, writeDiagnostic: null,
+      reason: 'No order or fill', symbol: request.symbol,
+      clientOrderId: request.entryClientOrderId, orderId: null,
+      confirmedFilledQuantity: 0, entryAverageFillPrice: null,
+      entryFeeAmount: 0, entryFeeCurrency: null, netOwnedBase: 0,
+      protectionTest: 'UNAVAILABLE' as const, protectionId: null, exitOrderId: null,
+      dustQuantity: 0, auraManagedActivePositionCount: 0 }));
+    const smokeRecovery = { begin: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined) };
+    const agent = new AuraAgent(agentConfigFromEnv(env('demo', 'false')), {
+      connector: h.connector, market: h.market, execution: h.execution, llm: h.llm,
+      now: () => NOW, smokeRecovery,
+      startupContext: (snapshot, references) => ({ referencePrices: references,
+        openedAtBySymbol: {}, protectionPlans: {}, protectionModes: {},
+        managedPositions: [], unmanagedInventory: snapshot.positions }),
+    });
+    const result = await agent.demoSmoke();
+    expect(result.execution?.status).toBe('ENTRY_NOT_ACCEPTED');
+    expect(result.execution?.auraManagedActivePositionCount).toBe(0);
+    expect(smokeRecovery.begin).toHaveBeenCalledOnce();
+    expect(smokeRecovery.clear).toHaveBeenCalledOnce();
+    expect(agent.getJudgeSnapshot()?.safety.reconciliationPending).toBe(false);
+    await agent.shutdown();
+  });
+
   it('keeps calibration read-only and groups diagnostics by symbol', async () => {
     const h = harness();
     const report = await h.agent.calibrate();
@@ -567,6 +686,41 @@ describe('AURA orchestration', () => {
     });
   });
 
+  it('does not sell unmanaged ETH when managed ETH is missing at a protective exit', async () => {
+    await withRecoveryAgent(async (agent, h, store) => {
+      await saveOwnedPosition(store, 'ETH-USDT');
+      h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: 1.5,
+        averageEntryPrice: 100, updatedAt: NOW }];
+      expect((await agent.preflight()).passed).toBe(true);
+      expect(agent.activate()).toBe(true);
+      h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: 0.5,
+        averageEntryPrice: 100, updatedAt: NOW }];
+      h.market.getTicker = vi.fn(async symbol => ({ symbol, bid: 79.99, ask: 80.01,
+        last: 80, timestamp: NOW }));
+      await agent.runSlowCycle();
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+      expect(agent.state).toBe('DEGRADED');
+    });
+  });
+
+  it('blocks a protective SELL when an external SELL fill appears despite replenished balance', async () => {
+    await withRecoveryAgent(async (agent, h, store) => {
+      await saveOwnedPosition(store, 'ETH-USDT');
+      h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: 1.5,
+        averageEntryPrice: 100, updatedAt: NOW }];
+      expect((await agent.preflight()).passed).toBe(true);
+      expect(agent.activate()).toBe(true);
+      h.market.getTicker = vi.fn(async symbol => ({ symbol, bid: 79.99, ask: 80.01,
+        last: 80, timestamp: NOW }));
+      h.market.getRecentSpotFills = vi.fn(async symbol => [{ symbol, orderId: 'external',
+        clientOrderId: null, fillId: 'external-fill', side: 'sell' as const,
+        quantity: 0.5, price: 80, fee: 0, feeCurrency: 'USDT', timestamp: NOW }]);
+      await agent.runSlowCycle();
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+      expect(agent.state).toBe('DEGRADED');
+    });
+  });
+
   it('blocks preflight for two AURA-owned symbol claims', async () => {
     await withRecoveryAgent(async (agent, h, store) => {
       await saveOwnedPosition(store, 'ETH-USDT');
@@ -606,7 +760,9 @@ describe('AURA orchestration', () => {
     h.execution.getWriteToolNames = () => ['spot_place_order', 'system_get_capabilities'];
     h.execution.getCapabilities = () => ({ placeOrder: 'spot_place_order', getOrder: 'spot_get_order',
       getOrders: 'spot_get_orders', getFills: 'spot_get_fills', getAlgoOrders: null,
-      placeAlgoOrder: null, conditionalProtectionSupported: false, ocoProtectionSupported: false,
+      placeAlgoOrder: null, algoClientOrderIdSupported: false,
+      cancelOrder: null, cancelAlgoOrder: null,
+      conditionalProtectionSupported: false, ocoProtectionSupported: false,
       getBalance: 'account_get_balance', getTradeFee: 'account_get_trade_fee',
       clientOrderIdSupported: true, attachedProtectionSupported: false });
     const report = await h.agent.preflight();
@@ -628,5 +784,464 @@ describe('AURA orchestration', () => {
     expect(report.checks.find(check => check.name === 'MONITOR_RECONCILIATION')?.detail).toContain('differs');
     expect(h.agent.activate()).toBe(false);
     await h.agent.shutdown();
+  });
+});
+
+describe('AURA exit ownership and quantity handling', () => {
+  const lot = 0.00001;
+
+  it('owns only the fee-net base quantity after a BUY and exits whole lots, writing off dust', async () => {
+    const h = harness();
+    const plans: ApprovedOrderPlan[] = [];
+    const fills: RecentSpotFill[] = [];
+    vi.mocked(h.execution.submitApprovedOrder).mockImplementation(async plan => {
+      plans.push(plan);
+      const orderId = `order-${plans.length}`;
+      // OKX charges spot BUY fees in the base currency and SELL fees in the quote currency.
+      fills.push({ symbol: plan.symbol, fillId: `fill-${orderId}`, orderId, clientOrderId: plan.clientOrderId,
+        side: plan.side === 'BUY' ? 'buy' : 'sell', quantity: plan.quantity, price: plan.referencePrice,
+        fee: plan.side === 'BUY' ? -plan.quantity * 0.001 : -plan.quantity * plan.referencePrice * 0.001,
+        feeCurrency: plan.side === 'BUY' ? 'BTC' : 'USDT', timestamp: NOW });
+      return { status: 'ACCEPTED' as const, symbol: plan.symbol, clientOrderId: plan.clientOrderId,
+        cycleId: plan.cycleId, decisionId: plan.decisionId, accepted: true, exchangeOrderId: orderId,
+        reason: null, timestamp: NOW, protectionMode: 'CLIENT_SIDE' as const, protectionVerified: false };
+    });
+    vi.mocked(h.execution.reconcile).mockImplementation(async request => ({ outcome: 'FILLED' as const,
+      symbol: request.symbol, clientOrderId: request.clientOrderId, cycleId: request.cycleId,
+      decisionId: request.decisionId, position: null, reconciled: true, reason: 'filled', timestamp: NOW,
+      order: { symbol: request.symbol, clientOrderId: request.clientOrderId, cycleId: request.cycleId,
+        decisionId: request.decisionId, exchangeOrderId: request.exchangeOrderId ?? null,
+        state: 'FILLED' as const, requestedQuantity: request.quantity, filledQuantity: request.quantity,
+        averageFillPrice: 100, updatedAt: NOW, fee: -0.001, feeCurrency: 'USDT', tradeId: `trade-${request.exchangeOrderId ?? request.clientOrderId}`, fillTime: NOW } }));
+    vi.mocked(h.market.getRecentSpotFills).mockImplementation(async symbol => fills.filter(fill => fill.symbol === symbol));
+    await h.agent.preflight(); h.agent.activate();
+    expect((await h.agent.runSlowCycle()).status).toBe('SUBMITTED');
+    const entry = plans[0]!;
+    const owned = entry.quantity - entry.quantity * 0.001;
+    const position = await h.agent.positionMonitor!.getOpenPosition();
+    expect(position?.quantity).toBeCloseTo(owned, 12);
+    expect(position!.quantity).toBeLessThan(entry.quantity);
+    expect(h.agent.pendingOrderId).toBeNull();
+
+    h.snapshot.positions = [{ symbol: 'BTC-USDT', quantity: owned, averageEntryPrice: 100, updatedAt: NOW }];
+    vi.mocked(h.market.getTicker).mockResolvedValue({ symbol: 'BTC-USDT', bid: 79.99, ask: 80.01, last: 80, timestamp: NOW });
+    await h.agent.runFastCycle();
+    const exit = plans[1]!;
+    expect(exit.side).toBe('SELL');
+    expect(exit.quantity).toBeLessThanOrEqual(owned);
+    expect(Math.abs(exit.quantity / lot - Math.round(exit.quantity / lot))).toBeLessThan(1e-6);
+    expect(owned - exit.quantity).toBeLessThan(lot);
+    expect(await h.agent.positionMonitor!.getOpenPosition()).toBeNull();
+    expect(h.agent.pendingOrderId).toBeNull();
+    expect(h.agent.state).toBe('LIVE');
+    expect(h.agent.positionMonitor!.getRecentDecisionMemory()[0]?.resultCategory).toBe('CLOSED');
+    await h.agent.shutdown();
+  });
+
+  it('reconciles an exchange-side exit from external sell fills instead of sending a second SELL', async () => {
+    const h = harness({ held: 'BTC-USDT', tickerPrice: 80 });
+    expect((await h.agent.preflight()).passed).toBe(true);
+    h.agent.activate();
+    h.snapshot.positions = [];
+    vi.mocked(h.market.getRecentSpotFills).mockResolvedValue([{ symbol: 'BTC-USDT', fillId: 'fill-algo',
+      orderId: 'algo-1', clientOrderId: null, side: 'sell', quantity: 1, price: 96, fee: -0.096,
+      feeCurrency: 'USDT', timestamp: NOW - 10 }]);
+    await h.agent.runFastCycle();
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    expect(await h.agent.positionMonitor!.getOpenPosition()).toBeNull();
+    expect(h.agent.state).toBe('LIVE');
+    await h.agent.shutdown();
+  });
+
+  it('fails closed when the managed quantity is missing without matching sell fills', async () => {
+    const h = harness({ held: 'ETH-USDT', tickerPrice: 80 });
+    expect((await h.agent.preflight()).passed).toBe(true);
+    h.agent.activate();
+    h.snapshot.positions = [];
+    await h.agent.runFastCycle();
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    expect((await h.agent.positionMonitor!.getOpenPosition())?.symbol).toBe('ETH-USDT');
+    expect(h.agent.state).toBe('DEGRADED');
+    await h.agent.shutdown();
+  });
+});
+
+describe('AURA attached protection lifecycle and observe mode', () => {
+  function wireFilledExecution(h: ReturnType<typeof harness>, protectionIds: readonly string[] = []) {
+    const plans: ApprovedOrderPlan[] = [];
+    const fills: RecentSpotFill[] = [];
+    vi.mocked(h.execution.submitApprovedOrder).mockImplementation(async plan => {
+      plans.push(plan);
+      const orderId = `order-${plans.length}`;
+      fills.push({ symbol: plan.symbol, fillId: `fill-${orderId}`, orderId, clientOrderId: plan.clientOrderId,
+        side: plan.side === 'BUY' ? 'buy' : 'sell', quantity: plan.quantity, price: plan.referencePrice,
+        fee: plan.side === 'BUY' ? -plan.quantity * 0.001 : -plan.quantity * plan.referencePrice * 0.001,
+        feeCurrency: plan.side === 'BUY' ? 'BTC' : 'USDT', timestamp: NOW });
+      return { status: 'ACCEPTED' as const, symbol: plan.symbol, clientOrderId: plan.clientOrderId,
+        cycleId: plan.cycleId, decisionId: plan.decisionId, accepted: true, exchangeOrderId: orderId,
+        reason: null, timestamp: NOW, protectionMode: plan.side === 'BUY' && protectionIds.length
+          ? 'EXCHANGE_SIDE' as const : 'CLIENT_SIDE' as const,
+        protectionVerified: protectionIds.length > 0,
+        ...(plan.side === 'BUY' ? { protectionIds: [...protectionIds] } : {}) };
+    });
+    vi.mocked(h.execution.reconcile).mockImplementation(async request => ({ outcome: 'FILLED' as const,
+      symbol: request.symbol, clientOrderId: request.clientOrderId, cycleId: request.cycleId,
+      decisionId: request.decisionId, position: null, reconciled: true, reason: 'filled', timestamp: NOW,
+      order: { symbol: request.symbol, clientOrderId: request.clientOrderId, cycleId: request.cycleId,
+        decisionId: request.decisionId, exchangeOrderId: request.exchangeOrderId ?? null,
+        state: 'FILLED' as const, requestedQuantity: request.quantity, filledQuantity: request.quantity,
+        averageFillPrice: 100, updatedAt: NOW, fee: -0.001, feeCurrency: 'USDT', tradeId: `trade-${request.exchangeOrderId ?? request.clientOrderId}`, fillTime: NOW } }));
+    vi.mocked(h.market.getRecentSpotFills).mockImplementation(async symbol => fills.filter(fill => fill.symbol === symbol));
+    return { plans, fills };
+  }
+
+  it('cancels the entry-linked attached protection after a client-side exit and keeps it away from the next same-symbol trade', async () => {
+    const h = harness();
+    const { plans } = wireFilledExecution(h, ['algo-1']);
+    await h.agent.preflight(); h.agent.activate();
+    expect((await h.agent.runSlowCycle()).status).toBe('SUBMITTED');
+    const position = await h.agent.positionMonitor!.getOpenPosition();
+    expect(position).toMatchObject({ entryOrderId: 'order-1', attachedProtectionIds: ['algo-1'], protectionMode: 'EXCHANGE_SIDE' });
+    expect(h.execution.cancelAttachedProtection).not.toHaveBeenCalled();
+
+    h.snapshot.positions = [{ symbol: 'BTC-USDT', quantity: position!.quantity, averageEntryPrice: 100, updatedAt: NOW }];
+    vi.mocked(h.market.getTicker).mockResolvedValue({ symbol: 'BTC-USDT', bid: 79.99, ask: 80.01, last: 80, timestamp: NOW });
+    await h.agent.runFastCycle();
+    expect(plans[1]?.side).toBe('SELL');
+    expect(await h.agent.positionMonitor!.getOpenPosition()).toBeNull();
+    expect(h.execution.cancelAttachedProtection).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.execution.cancelAttachedProtection!).mock.calls[0]?.[0]).toMatchObject({
+      symbol: 'BTC-USDT', entryOrderId: 'order-1', protectionIds: ['algo-1'] });
+    expect(h.agent.state).toBe('LIVE');
+
+    // A second trade in the same symbol starts from its own protection plan, not the old stop levels.
+    h.snapshot.positions = [];
+    vi.mocked(h.market.getTicker).mockResolvedValue({ symbol: 'BTC-USDT', bid: 99.99, ask: 100.01, last: 100, timestamp: NOW });
+    expect((await h.agent.runSlowCycle()).status).toBe('SUBMITTED');
+    const next = await h.agent.positionMonitor!.getOpenPosition();
+    expect(next?.entryOrderId).toBe('order-3');
+    expect(h.agent.getJudgeSnapshot()?.functional.position?.stopPrice).toBe(97);
+    await h.agent.shutdown();
+  });
+
+  it('blocks new entries when attached protection cleanup is ambiguous', async () => {
+    const h = harness();
+    const { plans } = wireFilledExecution(h, ['algo-1']);
+    vi.mocked(h.execution.cancelAttachedProtection!).mockResolvedValue({ status: 'AMBIGUOUS',
+      protectionIds: ['algo-1'], reason: 'still pending' });
+    await h.agent.preflight(); h.agent.activate();
+    expect((await h.agent.runSlowCycle()).status).toBe('SUBMITTED');
+    const position = await h.agent.positionMonitor!.getOpenPosition();
+    h.snapshot.positions = [{ symbol: 'BTC-USDT', quantity: position!.quantity, averageEntryPrice: 100, updatedAt: NOW }];
+    vi.mocked(h.market.getTicker).mockResolvedValue({ symbol: 'BTC-USDT', bid: 79.99, ask: 80.01, last: 80, timestamp: NOW });
+    await h.agent.runFastCycle();
+    expect(await h.agent.positionMonitor!.getOpenPosition()).toBeNull();
+    expect(h.agent.state).toBe('DEGRADED');
+    expect(h.agent.getJudgeSnapshot()?.safety.reconciliationPending).toBe(true);
+    const submissions = plans.length;
+    expect((await h.agent.runSlowCycle()).status).toBe('BLOCKED');
+    expect(plans).toHaveLength(submissions);
+    await h.agent.shutdown();
+  });
+
+  it('sells only the managed quantity when the exchange also holds unmanaged inventory', async () => {
+    const h = harness({ held: 'BTC-USDT', tickerPrice: 80 });
+    expect((await h.agent.preflight()).passed).toBe(true);
+    h.agent.activate();
+    h.snapshot.positions = [{ symbol: 'BTC-USDT', quantity: 2.5, averageEntryPrice: 100, updatedAt: NOW }];
+    await h.agent.runFastCycle();
+    expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0]).toMatchObject({ side: 'SELL', quantity: 1 });
+    await h.agent.shutdown();
+  });
+
+  it('produces the Market Critic verdict and Risk Certificate in observe mode without any WRITE call', async () => {
+    const snapshots: ObserverSnapshot[] = [];
+    const h = harness({ profile: 'demo', observer: snapshot => { snapshots.push(snapshot); } });
+    expect((await h.agent.preflight()).readiness).toBe('READY_FOR_DEMO');
+    expect(h.agent.activate()).toBe(false);
+    const result = await h.agent.runSlowCycle();
+    expect(result).toMatchObject({ status: 'BLOCKED', selectedSymbol: 'BTC-USDT', reason: 'OBSERVE_ONLY_EXECUTION_WITHHELD' });
+    expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    expect(h.connector.callTool).not.toHaveBeenCalled();
+    expect(h.execution.getWriteTraces?.()).toEqual([]);
+    const judge = h.agent.getJudgeSnapshot()!;
+    expect(judge.functional.state).toBe('OBSERVE_ONLY');
+    expect(Object.keys(judge.functional.markets).sort()).toEqual(['BTC-USDT', 'ETH-USDT']);
+    expect(judge.reasoning.criticVerdict).toBe('AGREE');
+    expect(judge.reasoning.counterThesis).toBe('test');
+    expect(judge.reasoning.riskCertificate?.verdict).toBe('ALLOW');
+    expect(judge.reasoning.riskCertificate?.gates.length).toBeGreaterThan(20);
+    expect(judge.atk.latestProvenance?.nodes.some(node => node.source === 'LLM')).toBe(true);
+    expect(judge.atk.latestProvenance?.nodes.some(node => node.source === 'RISK')).toBe(true);
+    expect(judge.atk.latestProvenance?.nodes.some(node => node.lane === 'WRITE')).toBe(false);
+    expect(judge.atk.recentTraces.some(trace => trace.lane === 'WRITE')).toBe(false);
+    expect(snapshots.at(-1)?.llm?.action).toBe('AGREE');
+    expect(snapshots.at(-1)?.riskCertificate?.verdict).toBe('ALLOW');
+    await h.agent.shutdown();
+  });
+
+  it('blocks readiness on pending algo protection that is not linked to the restored AURA trade', async () => {
+    const h = harness();
+    vi.mocked(h.execution.getPendingProtection!).mockImplementation(async symbol => symbol === 'ETH-USDT'
+      ? [{ symbol, algoId: 'orphan-1', algoClientOrderId: null, orderId: null }] : []);
+    const report = await h.agent.preflight();
+    expect(report.readiness).toBe('BLOCKED');
+    expect(report.checks.find(check => check.name === 'UNRESOLVED_PROTECTION')).toMatchObject({ passed: false });
+    expect(report.checks.find(check => check.name === 'UNRESOLVED_PROTECTION')?.detail).toContain('ETH-USDT:orphan-1');
+    expect(h.agent.activate()).toBe(false);
+    await h.agent.shutdown();
+  });
+
+  it('accepts pending protection linked to the checkpoint-backed entry after a restart', async () => {
+    await withRecoveryAgent(async (agent, h, store) => {
+      await saveOwnedPosition(store, 'ETH-USDT');
+      h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: 1, averageEntryPrice: 100, updatedAt: NOW }];
+      vi.mocked(h.execution.getPendingProtection!).mockImplementation(async symbol => symbol === 'ETH-USDT'
+        ? [{ symbol, algoId: 'algo-linked', algoClientOrderId: null, orderId: 'order-1' }] : []);
+      const report = await agent.preflight();
+      expect(report.checks.find(check => check.name === 'UNRESOLVED_PROTECTION')).toMatchObject({ passed: true });
+      expect(report.positionSymbol).toBe('ETH-USDT');
+      expect((await agent.positionMonitor!.getOpenPosition())?.entryOrderId).toBe('order-1');
+    });
+  });
+});
+
+describe('ATK profile credential and mode verification', () => {
+  function withSystemCapabilities(h: ReturnType<typeof harness>, capabilities: Record<string, unknown>) {
+    h.connector.getCapabilities = () => ({
+      has: (capability: string) => capability === 'SYSTEM_CAPABILITIES' || capability !== 'NEVER',
+      resolve: (capability: string) => capability === 'SYSTEM_CAPABILITIES' ? 'system_get_capabilities' : null,
+      missing: () => [], names: () => toolNames, reverse: () => null, toolCount: toolNames.length,
+    }) as unknown as ReturnType<NonNullable<OkxConnector['getCapabilities']>>;
+    vi.mocked(h.connector.callTool).mockImplementation(async name => {
+      if (name === 'system_get_capabilities') return { capabilities } as never;
+      throw new Error('Unexpected real MCP call');
+    });
+  }
+
+  it('fails closed when the ATK profile loaded no credentials', async () => {
+    const h = harness();
+    withSystemCapabilities(h, { readOnly: true, hasAuth: false, demo: false });
+    const report = await h.agent.preflight();
+    expect(report.readiness).toBe('BLOCKED');
+    expect(report.checks.find(check => check.name === 'SERVER_AUTH')?.detail).toContain('[profiles.<name>]');
+    expect(h.agent.activate()).toBe(false);
+    await h.agent.shutdown();
+  });
+
+  it('fails closed when the ATK server mode contradicts the AURA profile', async () => {
+    const h = harness({ profile: 'demo' });
+    withSystemCapabilities(h, { readOnly: true, hasAuth: true, demo: false });
+    const report = await h.agent.preflight();
+    expect(report.checks.find(check => check.name === 'SERVER_MODE')?.passed).toBe(false);
+    expect(report.readiness).toBe('BLOCKED');
+    await h.agent.shutdown();
+  });
+
+  it('passes when credentials are loaded and the mode matches', async () => {
+    const h = harness();
+    withSystemCapabilities(h, { readOnly: true, hasAuth: true, demo: false });
+    const report = await h.agent.preflight();
+    expect(report.checks.find(check => check.name === 'SERVER_AUTH')?.passed).toBe(true);
+    expect(report.checks.find(check => check.name === 'SERVER_MODE')?.passed).toBe(true);
+    expect(report.passed).toBe(true);
+    await h.agent.shutdown();
+  });
+});
+
+describe('attached protection demo verifier (production entry path)', () => {
+  type Ctx = { agent: AuraAgent; h: ReturnType<typeof harness>; plans: ApprovedOrderPlan[];
+    marker: { begin: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn> }; events: AuditEvent[] };
+  async function verifier(options: { profile?: 'demo' | 'live'; armed?: boolean; verified?: boolean;
+    cleanup?: 'CANCELLED' | 'AMBIGUOUS' | 'NONE'; fillsIndexLag?: boolean }, run: (ctx: Ctx) => Promise<void>): Promise<void> {
+    const directory = await mkdtemp(join(tmpdir(), 'aura-attached-'));
+    const profile = options.profile ?? 'demo';
+    const armed = options.armed ?? false;
+    const verified = options.verified !== false;
+    const events: AuditEvent[] = [];
+    const h = harness({ profile, armed });
+    Object.defineProperty(h.connector, 'readOnly', { value: true });
+    const store = new AgentRecoveryStore(join(directory, 'checkpoint.json'));
+    const eth = { currency: 'ETH', equity: 1, available: 1 };
+    h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: 1, averageEntryPrice: null, updatedAt: NOW }];
+    h.snapshot.balances = [{ currency: 'USDT', equity: 10_000, available: 10_000 }, eth];
+    h.execution.verifyDemoRuntime = vi.fn(async () => true);
+    h.execution.getCapabilities = () => ({ placeOrder: 'spot_place_order', getOrder: 'spot_get_order',
+      getOrders: 'spot_get_orders', getFills: 'spot_get_fills', getAlgoOrders: 'spot_get_algo_orders',
+      placeAlgoOrder: 'spot_place_algo_order', algoClientOrderIdSupported: true, cancelOrder: null,
+      cancelAlgoOrder: 'spot_cancel_algo_order', conditionalProtectionSupported: true, ocoProtectionSupported: true,
+      getBalance: 'account_get_balance', getTradeFee: 'account_get_trade_fee', clientOrderIdSupported: true,
+      attachedProtectionSupported: true });
+    const plans: ApprovedOrderPlan[] = [];
+    const fills: RecentSpotFill[] = [];
+    let algoPending = false;
+    vi.mocked(h.execution.submitApprovedOrder).mockImplementation(async plan => {
+      plans.push(plan);
+      const orderId = `order-${plans.length}`;
+      if (plan.side === 'BUY') {
+        const fee = plan.quantity * 0.001;
+        fills.push({ symbol: plan.symbol, fillId: `fill-${orderId}`, orderId, clientOrderId: plan.clientOrderId,
+          side: 'buy', quantity: plan.quantity, price: plan.referencePrice, fee: -fee, feeCurrency: 'ETH', timestamp: NOW });
+        eth.equity = Number((eth.equity + plan.quantity - fee).toPrecision(15));
+        algoPending = verified;
+      } else {
+        fills.push({ symbol: plan.symbol, fillId: `fill-${orderId}`, orderId, clientOrderId: plan.clientOrderId,
+          side: 'sell', quantity: plan.quantity, price: plan.referencePrice,
+          fee: -plan.quantity * plan.referencePrice * 0.001, feeCurrency: 'USDT', timestamp: NOW });
+        eth.equity = Number((eth.equity - plan.quantity).toPrecision(15));
+      }
+      eth.available = eth.equity;
+      h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: eth.equity, averageEntryPrice: null, updatedAt: NOW }];
+      return { status: 'ACCEPTED' as const, symbol: plan.symbol, clientOrderId: plan.clientOrderId,
+        cycleId: plan.cycleId, decisionId: plan.decisionId, accepted: true, exchangeOrderId: orderId, reason: null,
+        timestamp: NOW, protectionMode: plan.side === 'BUY' ? (verified ? 'EXCHANGE_SIDE' as const : 'CLIENT_SIDE' as const) : null,
+        protectionVerified: plan.side === 'BUY' && verified,
+        protectionIds: plan.side === 'BUY' && verified ? ['parent-attach', 'oco-live'] : [] };
+    });
+    vi.mocked(h.execution.reconcile).mockImplementation(async request => ({ outcome: 'FILLED' as const,
+      symbol: request.symbol, clientOrderId: request.clientOrderId, cycleId: request.cycleId,
+      decisionId: request.decisionId, position: null, reconciled: true, reason: 'filled', timestamp: NOW,
+      order: { symbol: request.symbol, clientOrderId: request.clientOrderId, cycleId: request.cycleId,
+        decisionId: request.decisionId, exchangeOrderId: request.exchangeOrderId ?? null,
+        state: 'FILLED' as const, requestedQuantity: request.quantity, filledQuantity: request.quantity,
+        averageFillPrice: 100, updatedAt: NOW, fee: -0.001, feeCurrency: 'USDT', tradeId: `trade-${request.exchangeOrderId ?? request.clientOrderId}`, fillTime: NOW } }));
+    vi.mocked(h.market.getRecentSpotFills).mockImplementation(async symbol => fills.filter(fill => fill.symbol === symbol
+      && !(options.fillsIndexLag && fill.side === 'sell')));
+    // Real OKX shape: the live OCO has its own algoId (not the parent attachAlgoId), no parent ordId, no client ID.
+    vi.mocked(h.execution.getPendingProtection!).mockImplementation(async () => algoPending && plans[0]
+      ? [{ symbol: 'ETH-USDT', algoId: 'oco-live', algoClientOrderId: null, orderId: null, side: 'sell', ordType: 'oco', state: 'live',
+        quantity: Number((Math.floor((plans[0].quantity * 0.999) / 0.00001) * 0.00001).toPrecision(15)),
+        slTriggerPx: plans[0].protection.initialStopPrice,
+        tpTriggerPx: Number((Math.floor((plans[0].referencePrice + plans[0].protection.stopDistanceAbsolute * 2.5) / 0.01) * 0.01).toPrecision(15)),
+        createdAt: NOW }] : []);
+    vi.mocked(h.execution.cancelAttachedProtection!).mockImplementation(async link => {
+      const status = options.cleanup ?? 'CANCELLED';
+      if (status !== 'AMBIGUOUS') algoPending = false;
+      return { status, protectionIds: [...link.protectionIds], reason: 'test' };
+    });
+    const marker = { begin: vi.fn(async () => undefined), clear: vi.fn(async () => undefined) };
+    const agent = new AuraAgent(agentConfigFromEnv(env(profile, String(armed))), {
+      connector: h.connector, market: h.market, execution: h.execution, llm: h.llm, now: () => NOW,
+      audit: event => { events.push(event); }, evaluateSymbol: async symbol => evaluation(symbol, 80),
+      startupContext: (snapshot, references) => store.context(snapshot, references),
+      persistPosition: position => store.save(position), smokeRecovery: marker, demoSmokeNotice: () => undefined });
+    try { await run({ agent, h, plans, marker, events }); }
+    finally { await agent.shutdown(); await rm(directory, { recursive: true, force: true }); }
+  }
+
+  it('refuses a live profile before any submission', async () => {
+    await verifier({ profile: 'live', armed: false }, async ({ agent, h, marker }) => {
+      const result = await agent.attachedProtectionSmoke();
+      expect(result.passed).toBe(false);
+      expect(result.reason).toContain('REFUSED');
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+      expect(marker.begin).not.toHaveBeenCalled();
+    });
+  });
+
+  it('refuses LIVE_TRADING_ARMED=true even on demo', async () => {
+    await verifier({ profile: 'demo', armed: true }, async ({ agent, h }) => {
+      const result = await agent.attachedProtectionSmoke();
+      expect(result.reason).toContain('LIVE_TRADING_ARMED=false');
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    });
+  });
+
+  it('passes through the production path with attached TP/SL payload, net fee quantity, whole-lot exit, cleanup and intact inventory', async () => {
+    await verifier({}, async ({ agent, h, plans, marker, events }) => {
+      const result = await agent.attachedProtectionSmoke();
+      expect(result.reason).not.toContain('MANUAL');
+      expect(result.passed).toBe(true);
+      expect(plans).toHaveLength(2);
+      const [entry, exit] = plans as [ApprovedOrderPlan, ApprovedOrderPlan];
+      expect(entry.side).toBe('BUY');
+      expect(entry.tickSize).toBe(0.01);
+      expect(entry.clientOrderId).toMatch(/^AURAENTRY[0-9a-f]{22}$/);
+      expect(Math.abs(entry.protection.initialStopPrice / 0.01 - Math.round(entry.protection.initialStopPrice / 0.01))).toBeLessThan(1e-6);
+      expect(entry.referencePrice - entry.protection.initialStopPrice).toBeCloseTo(entry.protection.stopDistanceAbsolute, 10);
+      expect(entry.protection.takeProfitR).toBe(2.5);
+      const netOwned = entry.quantity - entry.quantity * 0.001;
+      expect(result.evidence.netOwnedBase).toBeCloseTo(netOwned, 12);
+      expect(exit.side).toBe('SELL');
+      expect(exit.quantity).toBeLessThanOrEqual(netOwned);
+      expect(Math.abs(exit.quantity / 0.00001 - Math.round(exit.quantity / 0.00001))).toBeLessThan(1e-6);
+      expect(result.evidence).toMatchObject({ protectionMode: 'EXCHANGE_SIDE', protectionVerified: true,
+        protectionIds: ['parent-attach', 'oco-live'], linkedPendingProtection: 1, cleanupStatus: 'CANCELLED', entryOrderId: 'order-1', exitOrderId: 'order-2' });
+      const cleanupLink = vi.mocked(h.execution.cancelAttachedProtection!).mock.calls[0]?.[0];
+      expect(cleanupLink?.signature).toMatchObject({ slTriggerPx: entry.protection.initialStopPrice, quantity: result.evidence.netOwnedBase });
+      expect(cleanupLink?.entryOrderId).toBe('order-1');
+      expect(result.evidence.dustQuantity).toBeLessThan(0.00001);
+      expect(h.execution.cancelAttachedProtection).toHaveBeenCalledTimes(1);
+      expect(marker.begin).toHaveBeenCalledTimes(1);
+      expect(marker.clear).toHaveBeenCalledTimes(1);
+      expect(await agent.positionMonitor!.getOpenPosition()).toBeNull();
+      expect(agent.state).not.toBe('DEGRADED');
+      // Unmanaged inventory (1 ETH) untouched: the exchange holds inventory plus sub-lot dust only.
+      expect(h.snapshot.positions[0]?.quantity).toBeGreaterThanOrEqual(1);
+      expect(events.some(e => e.eventType === 'EXECUTION_RESULT'
+        && (e.payload as { protectionMode?: string; protectionVerified?: boolean }).protectionMode === 'EXCHANGE_SIDE'
+        && (e.payload as { protectionVerified?: boolean }).protectionVerified === true)).toBe(true);
+      expect(events.some(e => e.eventType === 'PROTECTION'
+        && (e.payload as { reason?: string }).reason === 'ATTACHED_CLEANUP_CANCELLED')).toBe(true);
+      expect(events.some(e => e.eventType === 'DEMO_SMOKE'
+        && (e.payload as { stage?: string }).stage === 'ATTACHED_FINAL_STATE')).toBe(true);
+    });
+  });
+
+  it('flattens safely but does not claim PASS when exchange-side protection is not proven', async () => {
+    await verifier({ verified: false }, async ({ agent, plans, marker }) => {
+      const result = await agent.attachedProtectionSmoke();
+      expect(result.passed).toBe(false);
+      expect(result.reason).toContain('ATTACHED_PROTECTION_UNVERIFIED');
+      expect(plans.map(plan => plan.side)).toEqual(['BUY', 'SELL']);
+      expect(await agent.positionMonitor!.getOpenPosition()).toBeNull();
+      expect(marker.clear).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('fails closed on ambiguous protection cleanup: marker kept, DEGRADED, no further orders', async () => {
+    await verifier({ cleanup: 'AMBIGUOUS' }, async ({ agent, plans, marker }) => {
+      const result = await agent.attachedProtectionSmoke();
+      expect(result.passed).toBe(false);
+      expect(result.reason).toContain('MANUAL_RECONCILIATION_REQUIRED');
+      expect(plans).toHaveLength(2);
+      expect(marker.clear).not.toHaveBeenCalled();
+      expect(agent.state).toBe('DEGRADED');
+      expect((await agent.runSlowCycle()).status).toBe('BLOCKED');
+      expect(plans).toHaveLength(2);
+    });
+  });
+
+  it('reconciles the exit from the exact order record when the fills index lags, then passes', async () => {
+    await verifier({ fillsIndexLag: true }, async ({ agent, h, plans, marker }) => {
+      const result = await agent.attachedProtectionSmoke();
+      expect(result.reason).not.toContain('MANUAL');
+      expect(result.passed).toBe(true);
+      expect(plans.map(plan => plan.side)).toEqual(['BUY', 'SELL']);
+      expect(await agent.positionMonitor!.getOpenPosition()).toBeNull();
+      expect(agent.pendingOrderId).toBeNull();
+      expect(marker.clear).toHaveBeenCalledTimes(1);
+      expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(2);
+    });
+  });
+});
+
+describe('LIVE_ENTRY_PROTECTION_VERIFIED attestation', () => {
+  it('defaults to false, accepts only true/false, and gates live readiness', async () => {
+    expect(agentConfigFromEnv(env()).liveEntryProtectionVerified).toBe(false);
+    expect(agentConfigFromEnv({ ...env(), LIVE_ENTRY_PROTECTION_VERIFIED: 'true' }).liveEntryProtectionVerified).toBe(true);
+    expect(() => agentConfigFromEnv({ ...env(), LIVE_ENTRY_PROTECTION_VERIFIED: 'yes' })).toThrow('LIVE_ENTRY_PROTECTION_VERIFIED');
+    const blocked = harness();
+    blocked.execution.liveEntryProtectionReady = () => false;
+    expect((await blocked.agent.preflight()).readiness).toBe('BLOCKED');
+    await blocked.agent.shutdown();
+    const attested = harness();
+    attested.execution.liveEntryProtectionReady = () => true;
+    const report = await attested.agent.preflight();
+    expect(report.checks.find(check => check.name === 'LIVE_ENTRY_PROTECTION')?.passed).toBe(true);
+    expect(report.readiness).toBe('READY_FOR_LIVE');
+    await attested.agent.shutdown();
   });
 });

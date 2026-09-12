@@ -69,7 +69,9 @@ describe('isolated ATK MCP lanes', () => {
       purpose: 'SPOT_PLACE_ORDER', symbol: 'ETH-USDT', cycleId: 'cycle1', decisionId: 'decision1', success: true });
     expect(readTrace.latencyMs).toBeGreaterThanOrEqual(0);
     expect(JSON.stringify([readTrace, writeTrace])).not.toMatch(/api.key|secret|passphrase|Authorization/i);
-    readSession.client.callTool.mockRejectedValueOnce(new Error('secret=private'));
+    // The read-only lane retries a transient failure once; a persistent failure still surfaces.
+    readSession.client.callTool.mockRejectedValueOnce(new Error('secret=private'))
+      .mockRejectedValueOnce(new Error('secret=private'));
     await expect(read.callCapability('MARKET_TICKER', { instId: 'BTC-USDT' })).rejects.toThrow();
     expect(JSON.stringify(read.getRecentTraces())).not.toContain('private');
     await Promise.all([read.disconnect(), write.disconnect()]);

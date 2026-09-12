@@ -42,10 +42,23 @@ export interface OkxToolCallResult<T = unknown> {
   isError: boolean;
 }
 
+/** Allowlisted MCP/business fields; never contains arguments or credentials. */
+export interface OkxMcpCallDiagnostic {
+  toolName: string;
+  isError: boolean | null;
+  exchangeCode: string | null;
+  exchangeMessage: string | null;
+  returnedOrderId: string | null;
+  returnedClientOrderId: string | null;
+  latencyMs: number;
+  schemaParsed: boolean;
+}
+
 export class OkxConnectorError extends Error {
   constructor(
     readonly category: OkxConnectorErrorCategory,
     message: string,
+    readonly diagnostic?: OkxMcpCallDiagnostic,
   ) {
     super(message);
     this.name = 'OkxConnectorError';

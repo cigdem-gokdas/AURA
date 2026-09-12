@@ -9,6 +9,7 @@ import {
   type OkxConnectorConfig,
   type OkxConnectorHealth,
   type OkxToolDefinition,
+  type OkxMcpCallDiagnostic,
 } from './types.js';
 import { okxConnectorConfigFromEnv } from './config.js';
 import { AtkCapabilityRegistry, type AtkCapability } from './capabilities.js';
@@ -77,6 +78,38 @@ function assertNoCredentials(value: unknown): void {
       assertNoCredentials(child);
     }
   }
+}
+
+function diagnosticField(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const answer = String(value).replace(/[\x00-\x1f\x7f]/g, ' ').trim();
+  return answer ? answer.slice(0, 180) : null;
+}
+
+function safeBusinessMessage(value: unknown): string | null {
+  const message = diagnosticField(value);
+  if (!message) return null;
+  // Business messages are useful, but a server must not be able to echo secrets into audit.
+  return /(?:api.?key|secret|passphrase|password|authorization|bearer|credential|token)/i.test(message)
+    ? '[redacted]' : message;
+}
+
+function responseDiagnostic(toolName: string, isError: boolean | null,
+  payload: Record<string, unknown> | null, latencyMs: number,
+  fallbackText: string | null = null): OkxMcpCallDiagnostic {
+  const error = payload?.error && typeof payload.error === 'object' && !Array.isArray(payload.error)
+    ? payload.error as Record<string, unknown> : null;
+  const dataValue = Array.isArray(payload?.data) ? payload.data[0] : payload?.data;
+  const data = dataValue && typeof dataValue === 'object' && !Array.isArray(dataValue)
+    ? dataValue as Record<string, unknown> : null;
+  return { toolName, isError,
+    exchangeCode: diagnosticField(data?.sCode ?? data?.code ?? error?.code ?? payload?.code ?? null),
+    exchangeMessage: safeBusinessMessage(data?.sMsg ?? error?.message ?? payload?.msg
+      ?? payload?.message ?? (typeof payload?.error === 'string' ? payload.error : null)
+      ?? fallbackText),
+    returnedOrderId: diagnosticField(data?.ordId ?? null),
+    returnedClientOrderId: diagnosticField(data?.clOrdId ?? null),
+    latencyMs, schemaParsed: payload !== null && ('ok' in payload || 'data' in payload) };
 }
 
 function selectedProfile(config: OkxConnectorConfig): string {
@@ -294,7 +327,28 @@ export class OkxMcpConnector implements OkxConnector {
     return [...this.toolDefinitions];
   }
 
+  /**
+   * A transient exchange/API failure on the server-enforced read-only lane is retried
+   * exactly once after a short pause. WRITE-lane calls are never retried: an order or
+   * cancellation whose outcome is unknown must go to reconciliation, not be resent.
+   */
   async callTool<T>(
+    toolName: string,
+    args: Record<string, unknown>,
+    traceContext: { cycleId?: string; decisionId?: string } = {},
+  ): Promise<T> {
+    try {
+      return await this.callToolOnce<T>(toolName, args, traceContext);
+    } catch (error) {
+      const transientRead = this.config.lane === 'READ' && this.readOnly
+        && error instanceof OkxConnectorError && error.category === 'TOOL_CALL_FAILED';
+      if (!transientRead) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, 400));
+      return this.callToolOnce<T>(toolName, args, traceContext);
+    }
+  }
+
+  private async callToolOnce<T>(
     toolName: string,
     args: Record<string, unknown>,
     traceContext: { cycleId?: string; decisionId?: string } = {},
@@ -314,8 +368,9 @@ export class OkxMcpConnector implements OkxConnector {
     if (this.config.lane === 'READ' && !/^(market_get_|market_list_|account_get_|spot_get_|news_get_|news_search$|news_list_|event_get_|event_browse$|trade_get_|system_get_)/.test(toolName)) {
       throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'READ lane forbids state-changing MCP tools');
     }
-    if (this.config.lane === 'WRITE' && toolName !== 'spot_place_order' && toolName !== 'spot_place_algo_order') {
-      throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'WRITE lane exposes only spot execution tools');
+    if (this.config.lane === 'WRITE' && !['spot_place_order', 'spot_place_algo_order',
+      'spot_cancel_order', 'spot_cancel_algo_order', 'system_get_capabilities'].includes(toolName)) {
+      throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'WRITE lane exposes only spot execution and capability tools');
     }
     assertNoCredentials(args);
     const started = Date.now();
@@ -327,11 +382,12 @@ export class OkxMcpConnector implements OkxConnector {
         arguments: args,
       });
       let rawPayload: unknown = result.structuredContent;
+      let fallbackText: string | null = null;
       if (!rawPayload && Array.isArray(result.content)) {
         const texts = result.content.filter(part => part.type === 'text');
         if (texts.length === 1 && texts[0]?.type === 'text') {
           try { rawPayload = JSON.parse(texts[0].text); }
-          catch { rawPayload = null; }
+          catch { rawPayload = null; fallbackText = texts[0].text; }
         }
       }
       const payload =
@@ -340,10 +396,16 @@ export class OkxMcpConnector implements OkxConnector {
         !Array.isArray(rawPayload)
           ? (rawPayload as Record<string, unknown>)
           : null;
+      const diagnostic = responseDiagnostic(toolName, result.isError === true,
+        payload, Math.max(0, Date.now() - started), fallbackText);
       if (result.isError || (payload && payload.ok === false)) {
         throw new OkxConnectorError(
           'TOOL_CALL_FAILED',
-          `OKX MCP tool ${toolName} failed`,
+          // The sanitized exchange code/message is the only way an operator can tell an
+          // invalid live API key (5011x) from a transient exchange error.
+          `OKX MCP tool ${toolName} failed${diagnostic.exchangeCode || diagnostic.exchangeMessage
+            ? ` (${[diagnostic.exchangeCode, diagnostic.exchangeMessage].filter(Boolean).join(': ')})` : ''}`,
+          diagnostic,
         );
       }
       if (
@@ -355,6 +417,7 @@ export class OkxMcpConnector implements OkxConnector {
         throw new OkxConnectorError(
           'CONNECTOR_PROTOCOL_ERROR',
           `Invalid result from OKX MCP tool ${toolName}`,
+          diagnostic,
         );
       }
       success = true;

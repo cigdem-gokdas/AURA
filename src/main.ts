@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { AuraAgent, type PreflightReport } from './agent/agent.js';
 import { agentConfigFromEnv } from './agent/config.js';
 import { AgentRecoveryStore } from './agent/recovery.js';
+import { DemoSmokeRecoveryStore } from './agent/demo-smoke-recovery.js';
 import { OkxExecutionEngine } from './execution/engine.js';
 import { createLlmClient } from './llm/openai.js';
 import { OkxMarketAdapter } from './market/okx-market-adapter.js';
@@ -9,7 +10,7 @@ import { AtkReadClient, AtkWriteClient } from './okx/lanes.js';
 import { AuditLog, type AuditEvent } from './memory/audit.js';
 import { publishJudgeSnapshot } from './status-mcp/bridge.js';
 
-export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'run';
+export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'attached-protection-smoke' | 'run';
 
 /** Two independent MCP stdio processes: read-only evidence and spot execution. */
 export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
@@ -19,11 +20,15 @@ export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
   const connector = new AtkReadClient(env);
   const writeConnector = new AtkWriteClient(env);
   const market = new OkxMarketAdapter(connector);
-  const execution = new OkxExecutionEngine(writeConnector, config.symbols, Date.now, connector);
+  const execution = new OkxExecutionEngine(writeConnector, config.symbols, Date.now,
+    connector, env.LIVE_TRADING_ARMED === 'false', config.liveEntryProtectionVerified);
   const recovery = new AgentRecoveryStore(env.AURA_RECOVERY_STATE_PATH);
+  const smokeRecovery = new DemoSmokeRecoveryStore(`${recovery.path}.smoke`);
   let agent: AuraAgent;
   let statusQueue = Promise.resolve();
   agent = new AuraAgent(config, { connector, market, execution, llm: createLlmClient(env),
+    demoSmokeNotice: line => process.stdout.write(`${line}\n`),
+    smokeRecovery,
     ...(observability?.audit ? { audit: observability.audit } : {}),
     ...(observability?.statusPath ? { observer: () => {
       const snapshot = agent.getJudgeSnapshot();
@@ -31,7 +36,10 @@ export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
       statusQueue = statusQueue.then(() => publishJudgeSnapshot(observability.statusPath!, snapshot))
         .catch(error => { process.stderr.write(`AURA status publication failed: ${error instanceof Error ? error.message : 'Unknown error'}\n`); });
     } } : {}),
-    startupContext: (snapshot, references) => recovery.context(snapshot, references),
+    startupContext: async (snapshot, references) => {
+      await smokeRecovery.assertClear();
+      return recovery.context(snapshot, references);
+    },
     persistPosition: position => recovery.save(position),
     killSwitch: () => env.AURA_KILL_SWITCH === 'true' });
   return agent;
@@ -47,8 +55,8 @@ function printReport(report: PreflightReport): void {
 }
 
 export async function main(command: string | undefined = process.argv[2], env: NodeJS.ProcessEnv = process.env): Promise<number> {
-  if (!['preflight', 'calibrate', 'demo-smoke', 'run'].includes(command ?? '')) {
-    process.stderr.write('Usage: npm run agent:{preflight|calibrate|demo-smoke|run}\n');
+  if (!['preflight', 'calibrate', 'demo-smoke', 'attached-protection-smoke', 'run'].includes(command ?? '')) {
+    process.stderr.write('Usage: npm run agent:{preflight|calibrate|demo-smoke|attached-protection-smoke|run}\n');
     return 2;
   }
   let audit: AuditLog | null = null;
@@ -101,9 +109,34 @@ export async function main(command: string | undefined = process.argv[2], env: N
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return 0;
     }
+    if (command === 'attached-protection-smoke') {
+      const result = await agent.attachedProtectionSmoke();
+      for (const line of result.stages) process.stdout.write(`ATTACHED_PROTECTION_SMOKE ${line}\n`);
+      process.stdout.write(`ATTACHED_PROTECTION_SMOKE EVIDENCE ${JSON.stringify(result.evidence)}\n`);
+      process.stdout.write(`${result.passed ? 'PASS' : 'FAIL'} ATTACHED_PROTECTION_SMOKE ${result.reason}\n`);
+      if (result.passed) process.stdout.write('Human attestation may now set LIVE_ENTRY_PROTECTION_VERIFIED=true in .env\n');
+      return result.passed ? 0 : 1;
+    }
     const result = await agent.demoSmoke();
     printReport(result.preflight);
     process.stdout.write(`${result.passed ? 'PASS' : 'FAIL'} DEMO_SMOKE ${result.reason}\n`);
+    if (result.execution) {
+      const smoke = result.execution;
+      if (smoke.writeDiagnostic) process.stdout.write(`DEMO_SMOKE WRITE_RESULT `
+        + `${JSON.stringify(smoke.writeDiagnostic)}\n`);
+      process.stdout.write(`DEMO_SMOKE PROTECTION_TEST=${smoke.protectionTest} `
+        + `filled=${smoke.confirmedFilledQuantity} avgFill=${smoke.entryAverageFillPrice ?? 'unknown'} `
+        + `fee=${smoke.entryFeeAmount} ${smoke.entryFeeCurrency ?? 'unknown'} `
+        + `netOwnedBase=${smoke.netOwnedBase} dust=${smoke.dustQuantity} `
+        + `auraManagedActivePositions=${smoke.auraManagedActivePositionCount}\n`);
+      if (smoke.status === 'RECONCILE_REQUIRED'
+        || smoke.status === 'MANUAL_RECONCILIATION_REQUIRED') {
+        process.stdout.write('DEMO_SMOKE_MANUAL_RECONCILIATION_REQUIRED\n');
+        process.stdout.write(`symbol=${smoke.symbol} clientOrderId=${smoke.clientOrderId} `
+          + `orderId=${smoke.orderId ?? 'unknown'} confirmedFilledQuantity=${smoke.confirmedFilledQuantity} `
+          + `protectionId=${smoke.protectionId ?? 'none'} exitOrderId=${smoke.exitOrderId ?? 'none'}\n`);
+      }
+    }
     return result.passed ? 0 : 1;
   } finally { await agent.shutdown(); await closeAudit(); }
 }

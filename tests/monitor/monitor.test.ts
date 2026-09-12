@@ -262,3 +262,40 @@ describe('compact decision memory and startup reconciliation', () => {
     expect(monitor.reconcileStartup(missingBasis, context).status).toBe('INVALID_SNAPSHOT');
   });
 });
+
+describe('residual dust write-off', () => {
+  it('finalizes a sub-lot remainder at zero value and releases the position budget', async () => {
+    const monitor = new InMemoryPositionMonitor(10_000, start);
+    expect(monitor.processFill(fill('ETH-USDT', 'BUY', 2, 100, 1, start), policy('ETH-USDT')).status).toBe('APPLIED');
+    const sold = monitor.processFill(fill('ETH-USDT', 'SELL', 1.9999995, 110, 1, start + 1));
+    expect(sold.status).toBe('APPLIED');
+    expect(sold.closedTradePnl).toBeNull();
+    expect(monitor.closeResidualDust('BTC-USDT', 0.000001, start + 2).status).toBe('NO_MATCHING_POSITION');
+    expect(monitor.closeResidualDust('ETH-USDT', 0.0000001, start + 2).status).toBe('INVALID_FILL');
+    const closed = monitor.closeResidualDust('ETH-USDT', 0.000001, start + 2);
+    expect(closed.status).toBe('APPLIED');
+    expect(closed.closedTradePnl).toBeCloseTo(1.9999995 * 10 - 1 - 1 - 0.0000005 * 100, 6);
+    expect(closed.closedTradeOutcomeR).not.toBeNull();
+    expect(await monitor.getOpenPosition()).toBeNull();
+    expect((await monitor.getPerformanceState()).completedTrades).toBe(1);
+    expect((await monitor.getEquitySnapshot()).currentEquity).toBeCloseTo(10_000 - 201 + 1.9999995 * 110 - 1, 6);
+  });
+});
+
+describe('attached protection identity on positions', () => {
+  it('records entry identities on open and restores them from checkpoint links', async () => {
+    const monitor = new InMemoryPositionMonitor(10_000, start);
+    const opened = monitor.processFill(fill('ETH-USDT', 'BUY'), { ...policy('ETH-USDT'), entryProtectionIds: ['algo-7'] });
+    expect(opened.position).toMatchObject({ entryOrderId: 'order-ETH-USDT-BUY-1000',
+      entryClientOrderId: 'client-ETH-USDT-BUY-1000', attachedProtectionIds: ['algo-7'] });
+    const copy = (await monitor.getOpenPosition())!;
+    (copy.attachedProtectionIds as string[]).push('tampered');
+    expect((await monitor.getOpenPosition())?.attachedProtectionIds).toEqual(['algo-7']);
+
+    const fresh = new InMemoryPositionMonitor(10_000, start);
+    const restored = fresh.reconcileStartup(snapshot('ETH-USDT'), { ...startupContext('ETH-USDT'),
+      exchangeLinks: { 'ETH-USDT': { entryOrderId: 'order-x', entryClientOrderId: 'AURAENTRYabc', attachedProtectionIds: ['algo-x'] } } });
+    expect(restored.status).toBe('RESTORED');
+    expect(restored.position).toMatchObject({ entryOrderId: 'order-x', entryClientOrderId: 'AURAENTRYabc', attachedProtectionIds: ['algo-x'] });
+  });
+});

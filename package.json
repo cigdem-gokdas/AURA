@@ -14,6 +14,7 @@
     "agent:preflight": "tsx src/main.ts preflight",
     "agent:calibrate": "tsx src/main.ts calibrate",
     "agent:demo-smoke": "tsx src/main.ts demo-smoke",
+    "agent:attached-protection-smoke": "tsx src/main.ts attached-protection-smoke",
     "agent:run": "tsx src/main.ts run",
     "status:mcp": "node --import tsx src/status-mcp/server.ts"
   },

@@ -263,7 +263,10 @@ describe('OkxMarketAdapter', () => {
       {
         symbol: 'BTC-USDT',
         fillId: 'fill-1',
+        tradeId: null,
+        billId: null,
         orderId: 'order-1',
+        clientOrderId: null,
         side: 'buy',
         quantity: 0.2,
         price: 100,
@@ -278,6 +281,29 @@ describe('OkxMarketAdapter', () => {
       { status: 'open', instId: 'ETH-USDT' },
       { instId: 'BTC-USDT', archive: false },
     ]);
+  });
+
+  it('accepts observed ATK tradeId and billId fills and rejects unidentified fills', async () => {
+    const connector = new FakeConnector();
+    const adapter = new OkxMarketAdapter(connector);
+    const actual = { instId: 'ETH-USDT', ordId: '3916317316499066880',
+      clOrdId: 'AURASMOKE67112bd034b5c6a9d4152c', side: 'buy',
+      fillSz: '0.000732', fillPx: '2533.11', fee: '-0.000000732', feeCcy: 'ETH',
+      tradeId: '830754418', billId: '830754419', fillTime: '1789217747000' };
+    connector.responses.set('spot_get_fills', () => envelope([actual]));
+    expect(await adapter.getRecentSpotFills('ETH-USDT')).toMatchObject([{
+      symbol: 'ETH-USDT', fillId: '830754418', tradeId: '830754418',
+      billId: '830754419', orderId: '3916317316499066880',
+      clientOrderId: actual.clOrdId, side: 'buy', quantity: 0.000732,
+      price: 2533.11, fee: -0.000000732, feeCurrency: 'ETH',
+      timestamp: 1789217747000,
+    }]);
+    connector.responses.set('spot_get_fills', () => envelope([{ ...actual,
+      tradeId: '', billId: '830754419' }]));
+    expect((await adapter.getRecentSpotFills('ETH-USDT'))[0]?.fillId).toBe('830754419');
+    connector.responses.set('spot_get_fills', () => envelope([{ ...actual,
+      tradeId: '', billId: '' }]));
+    await expect(adapter.getRecentSpotFills('ETH-USDT')).rejects.toThrow('Missing or invalid fill ID');
   });
 
   it('discovers tools and clearly rejects missing required capabilities', async () => {

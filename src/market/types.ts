@@ -34,6 +34,8 @@ export interface OrderBookSnapshot {
 export interface InstrumentMeta {
   symbol: string;
   instrumentId: string;
+  /** Exchange trading state when the source supplies it. */
+  state?: string;
   minOrderSize: number;
   quantityStep: number;
   tickSize: number;
@@ -73,6 +75,9 @@ export interface RecentSpotFill {
   symbol: string;
   fillId: string;
   orderId: string;
+  clientOrderId?: string | null;
+  tradeId?: string | null;
+  billId?: string | null;
   side: 'buy' | 'sell';
   quantity: number;
   price: number;

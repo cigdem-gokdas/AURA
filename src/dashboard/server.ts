@@ -178,7 +178,13 @@ export class DashboardServer {
         return;
       if (fingerprint !== this.fingerprint) {
         const equity = snapshot.functional.equity;
-        const history = [...this.state.equityHistory];
+        const rawProfile = snapshot.atk.readLane?.profile ?? snapshot.atk.writeLane?.profile ?? null;
+        const profile: 'demo' | 'live' | null =
+          rawProfile === 'demo' || rawProfile === 'live' ? rawProfile : null;
+        // Demo and live are different accounts with unrelated equity scales; a profile
+        // switch (or an old in-memory history from before a restart) must never let a
+        // prior profile's points render alongside the currently active one.
+        const history = this.state.equityHistory.filter((point) => point.profile === profile);
         if (
           equity &&
           Number.isFinite(equity.current) &&
@@ -190,6 +196,7 @@ export class DashboardServer {
             equity: equity.current,
             dailyPnl: equity.dailyPnl,
             drawdownPct: equity.currentDrawdownPct,
+            profile,
           } satisfies EquityPoint);
         }
         this.state = {

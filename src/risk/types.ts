@@ -104,6 +104,8 @@ export interface ApprovedOrderPlan {
   cycleId: string;
   decisionId: string;
   clientOrderId: string;
+  /** Instrument tick size, supplied by the agent so exchange trigger prices can be aligned. Formatting only. */
+  tickSize?: number;
 }
 
 export type RiskGateName =

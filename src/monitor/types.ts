@@ -32,6 +32,11 @@ export interface OpenPosition {
   protectionPlan: ProtectionPlan;
   protectionMode: ProtectionMode;
   protection: PositionProtectionState;
+  /** Exchange identity of the opening order; links and cancels attached protection. */
+  entryOrderId?: string | null;
+  entryClientOrderId?: string | null;
+  /** Exchange algo IDs of protection attached to this entry. */
+  attachedProtectionIds?: readonly string[];
 }
 
 export interface EquitySnapshot {
@@ -84,6 +89,8 @@ export interface FillPolicy {
   /** Required for the first BUY and checked on subsequent same-symbol BUYs. */
   protectionPlan: ProtectionPlan | null;
   protectionMode: ProtectionMode;
+  /** Exchange algo IDs reported for the entry's attached protection. */
+  entryProtectionIds?: readonly string[];
 }
 
 export interface FillProcessingResult {
@@ -105,6 +112,9 @@ export interface StartupMonitorContext {
   managedPositions?: readonly ExchangePositionSnapshot[];
   /** Spot balances not attributed to an AURA trade; never enter position risk gates. */
   unmanagedInventory?: readonly ExchangePositionSnapshot[];
+  /** Entry order and attached protection identities restored from the checkpoint. */
+  exchangeLinks?: Readonly<Record<string, { entryOrderId: string | null; entryClientOrderId: string | null;
+    attachedProtectionIds: readonly string[] }>>;
 }
 
 export interface StartupMonitorResult {
@@ -124,4 +134,6 @@ export interface PositionMonitor {
   recordDecision(summary: DecisionMemorySummary): void;
   getRecentDecisionMemory(): readonly DecisionMemorySummary[];
   reconcileStartup(snapshot: StartupExchangeSnapshot, context: StartupMonitorContext): StartupMonitorResult;
+  /** Finalizes a sub-lot remainder that the exchange cannot sell; dust stays in the wallet as inventory. */
+  closeResidualDust?(symbol: string, lotSize: number, timestamp: number): FillProcessingResult;
 }
