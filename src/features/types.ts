@@ -1,3 +1,11 @@
+import type { Candle, OrderBookSnapshot } from '../market/types.js';
+
+export interface FeatureInput {
+  /** Oldest to newest, with one closed candle per timestamp. */
+  candles: readonly Candle[];
+  orderBook: OrderBookSnapshot;
+}
+
 export interface FeatureSnapshot {
   symbol: string;
   timestamp: number;
