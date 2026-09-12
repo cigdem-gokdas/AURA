@@ -66,7 +66,17 @@ describe('calculateFeatures', () => {
     expect(result.volumeSma20).toBeCloseTo(20.5, 10);
     expect(result.return5).toBeCloseTo(129 / 124 - 1, 10);
     expect(result.zScore20).toBeCloseTo(9.5 / Math.sqrt(33.25), 10);
-    expect(result.dataAgeMs).toBe(2_000);
+    expect(result.dataAgeMs).toBe(1_000);
+  });
+
+  it('measures live book age independently of the latest closed candle', () => {
+    const { data, evaluationTime } = fixture('BTC-USDT');
+    const fresh = calculateFeatures('BTC-USDT', data, evaluationTime);
+    expect(evaluationTime - data.candles.at(-1)!.timestamp).toBe(2_000);
+    expect(fresh.dataAgeMs).toBe(1_000);
+    const staleBook = { ...data.orderBook, timestamp: evaluationTime - 10_001 };
+    expect(calculateFeatures('BTC-USDT', { ...data, orderBook: staleBook }, evaluationTime).dataAgeMs)
+      .toBe(10_001);
   });
 
   it('uses Wilder smoothing after a true-range spike', () => {

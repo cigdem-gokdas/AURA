@@ -68,7 +68,10 @@ function numeric(value: unknown, label: string, minimum = -Infinity): number {
 
 function timestamp(value: unknown, label: string): number {
   const result = numeric(value, label, 1);
-  if (!Number.isSafeInteger(result)) invalid(`Invalid ${label}`);
+  // ATK/OKX timestamps are Unix milliseconds. A seconds value must fail closed
+  // instead of being treated as a plausible but decades-old market observation.
+  if (!Number.isSafeInteger(result) || result < 1_000_000_000_000)
+    invalid(`Invalid ${label}`);
   return result;
 }
 

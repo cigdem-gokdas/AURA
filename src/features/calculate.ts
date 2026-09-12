@@ -259,7 +259,9 @@ export function calculateFeatures(
     spreadBps: ((bestAsk.price - bestBid.price) / midPrice) * 10_000,
     microprice,
     micropriceLeanBps: ((microprice - midPrice) / midPrice) * 10_000,
-    dataAgeMs: evaluationTime - Math.min(latest.timestamp, orderBook.timestamp),
+    // Closed candle freshness is checked against its bar duration by the agent.
+    // Entry data freshness is the age of the live order-book observation.
+    dataAgeMs: evaluationTime - orderBook.timestamp,
   };
   for (const [key, value] of Object.entries(snapshot)) {
     if (typeof value === 'number') finite(value, key);

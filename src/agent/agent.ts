@@ -434,7 +434,15 @@ export class AuraAgent {
       this.deps.market.getOrderBook(symbol, 5),
       this.deps.market.getSpotFeeRate(symbol),
     ]);
-    const evaluationTime = this.now();
+    let evaluationTime = this.now();
+    // A small measured exchange/local clock skew can put a fresh ATK book a
+    // few milliseconds in the future. Wait for local time to catch up rather
+    // than accepting future data or changing the stale-data limit.
+    const futureMs = book.timestamp - evaluationTime;
+    if (futureMs > 0 && futureMs <= 100) {
+      await new Promise<void>(resolve => setTimeout(resolve, futureMs + 1));
+      evaluationTime = this.now();
+    }
     const barMs = 180_000;
     const sorted = [...candles].filter(candle => candle.timestamp + barMs <= evaluationTime)
       .sort((a, b) => a.timestamp - b.timestamp);

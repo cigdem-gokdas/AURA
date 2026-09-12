@@ -168,6 +168,29 @@ describe('OkxMarketAdapter', () => {
     });
   });
 
+  it.each([1789213220408, '1789213220408'])(
+    'normalizes a fresh millisecond order-book timestamp from %s',
+    async rawTimestamp => {
+      const connector = new FakeConnector();
+      connector.responses.set('market_get_orderbook', () => envelope([{ bids: [['99', '2']],
+        asks: [['101', '3']], ts: rawTimestamp }]));
+      const result = await new OkxMarketAdapter(connector).getOrderBook('BTC-USDT', 5);
+      expect(result.timestamp).toBe(1789213220408);
+      expect(1789213220432 - result.timestamp).toBe(24);
+    },
+  );
+
+  it.each([undefined, null, '', 'bad', '1789213220'])(
+    'rejects missing, invalid, or seconds-scale order-book timestamp %s',
+    async rawTimestamp => {
+      const connector = new FakeConnector();
+      connector.responses.set('market_get_orderbook', () => envelope([{ bids: [['99', '2']],
+        asks: [['101', '3']], ts: rawTimestamp }]));
+      await expect(new OkxMarketAdapter(connector).getOrderBook('BTC-USDT', 5))
+        .rejects.toThrow('Invalid order book timestamp');
+    },
+  );
+
   it('normalizes spot fees, trading balances, open orders, and recent fills', async () => {
     const connector = new FakeConnector();
     connector.responses.set('account_get_trade_fee', () =>

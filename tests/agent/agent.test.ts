@@ -469,6 +469,58 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
+  it('accepts a fresh book beside closed candles and rejects a book older than 10 seconds', async () => {
+    const h = harness();
+    const evaluationTime = 1_789_213_220_000;
+    h.market.getCandles = vi.fn(async symbol => Array.from({ length: 30 }, (_, index) => {
+      const close = 100 + index;
+      return { symbol, timestamp: evaluationTime - (30 - index) * 180_000,
+        open: close, high: close + 1, low: close - 1, close, volume: 100 };
+    }));
+    h.market.getOrderBook = vi.fn(async symbol => ({ symbol,
+      timestamp: evaluationTime - 1_000,
+      bids: [{ price: 99, size: 2 }], asks: [{ price: 101, size: 3 }] }));
+    const agent = new AuraAgent(agentConfigFromEnv({ ...env(), MAX_DATA_AGE_MS: '10000' }), {
+      connector: h.connector, market: h.market, execution: h.execution, llm: h.llm,
+      now: () => evaluationTime,
+    });
+    const evaluate = (agent as unknown as {
+      evaluate(symbol: string, position: null): Promise<SymbolEvaluation>;
+    }).evaluate.bind(agent);
+    expect((await evaluate('BTC-USDT', null)).feature.dataAgeMs).toBe(1_000);
+    h.market.getOrderBook = vi.fn(async symbol => ({ symbol,
+      timestamp: evaluationTime - 10_001,
+      bids: [{ price: 99, size: 2 }], asks: [{ price: 101, size: 3 }] }));
+    await expect(evaluate('BTC-USDT', null)).rejects.toThrow('Stale order book for BTC-USDT');
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+  });
+
+  it('waits out measured millisecond clock skew but rejects a materially future book', async () => {
+    const h = harness();
+    const evaluationTime = 1_789_213_220_000;
+    h.market.getCandles = vi.fn(async symbol => Array.from({ length: 30 }, (_, index) => {
+      const close = 100 + index;
+      return { symbol, timestamp: evaluationTime - (30 - index) * 180_000,
+        open: close, high: close + 1, low: close - 1, close, volume: 100 };
+    }));
+    h.market.getOrderBook = vi.fn(async symbol => ({ symbol,
+      timestamp: evaluationTime + 20,
+      bids: [{ price: 99, size: 2 }], asks: [{ price: 101, size: 3 }] }));
+    let clockReads = 0;
+    const agent = new AuraAgent(agentConfigFromEnv(env()), { connector: h.connector,
+      market: h.market, execution: h.execution, llm: h.llm,
+      now: () => ++clockReads === 1 ? evaluationTime : evaluationTime + 25 });
+    const evaluate = (agent as unknown as {
+      evaluate(symbol: string, position: null): Promise<SymbolEvaluation>;
+    }).evaluate.bind(agent);
+    expect((await evaluate('BTC-USDT', null)).feature.dataAgeMs).toBe(5);
+    h.market.getOrderBook = vi.fn(async symbol => ({ symbol,
+      timestamp: evaluationTime + 1_000,
+      bids: [{ price: 99, size: 2 }], asks: [{ price: 101, size: 3 }] }));
+    await expect(evaluate('BTC-USDT', null)).rejects.toThrow('Order book timestamp is in the future');
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+  });
+
   it('rejects unresolved startup holdings without explicit recovery metadata', async () => {
     const h = harness({ held: 'ETH-USDT' });
     const agent = new AuraAgent(agentConfigFromEnv(env()), {
