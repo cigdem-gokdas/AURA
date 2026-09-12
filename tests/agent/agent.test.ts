@@ -8,6 +8,7 @@ import type { MarketAdapter } from '../../src/market/types.js';
 import type { OkxConnector } from '../../src/okx/connector.js';
 import type { ProtectionPlan } from '../../src/risk/types.js';
 import type { CandidateSignal } from '../../src/signal/types.js';
+import type { AtkToolTrace } from '../../src/okx/telemetry.js';
 import { createProductionAgent } from '../../src/main.js';
 
 const NOW = 1_000_000;
@@ -52,15 +53,19 @@ function protection(symbol: string): ProtectionPlan {
 
 function harness(options: { scores?: Record<string, number>; edges?: Record<string, number>;
   held?: string; profile?: 'demo' | 'live'; armed?: boolean; observer?: (s: ObserverSnapshot) => void;
-  llmFailure?: boolean; ambiguous?: boolean; evaluationDelay?: Promise<void>; tickerPrice?: number } = {}) {
+  llmFailure?: boolean; ambiguous?: boolean; evaluationDelay?: Promise<void>; tickerPrice?: number;
+  missingTool?: string } = {}) {
   const profile = options.profile ?? 'live';
   let connected = false;
+  let writeConnected = false;
+  const writeTraces: AtkToolTrace[] = [];
   const connector: OkxConnector = {
     profile, connect: vi.fn(async () => { connected = true; }),
     disconnect: vi.fn(async () => { connected = false; }), isConnected: () => connected,
     healthCheck: vi.fn(async () => ({ connected, profile, status: connected ? 'HEALTHY' as const : 'UNAVAILABLE' as const,
       reason: null, timestamp: NOW })),
-    listTools: vi.fn(async () => toolNames.map(name => ({ name, description: null, inputSchema: {} }))),
+    listTools: vi.fn(async () => toolNames.filter(name => name !== options.missingTool)
+      .map(name => ({ name, description: null, inputSchema: {} }))),
     callTool: vi.fn(async () => { throw new Error('Unexpected real MCP call'); }),
   };
   const snapshot: StartupExchangeSnapshot = { profile, totalEquityUsd: 10_000,
@@ -82,11 +87,22 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
     getOpenSpotOrders: vi.fn(async () => []), getRecentSpotFills: vi.fn(async () => []),
   };
   const execution: ExecutionEngine = {
-    start: vi.fn(async () => { await connector.connect(); }),
-    submitApprovedOrder: vi.fn(async plan => ({ status: options.ambiguous ? 'RECONCILE_REQUIRED' as const : 'ACCEPTED' as const,
+    start: vi.fn(async () => { await connector.connect(); writeConnected = true; }),
+    stop: vi.fn(async () => { writeConnected = false; }),
+    getWriteHealth: vi.fn(async () => ({ connected: writeConnected, profile,
+      status: writeConnected ? 'HEALTHY' as const : 'UNAVAILABLE' as const,
+      reason: null, timestamp: NOW })),
+    getWriteTraces: () => [...writeTraces],
+    submitApprovedOrder: vi.fn(async plan => {
+      writeTraces.push({ timestamp: NOW, lane: 'WRITE', toolName: 'spot_place_order',
+        purpose: 'SPOT_PLACE_ORDER', symbol: plan.symbol, profile, latencyMs: 1,
+        success: !options.ambiguous, errorCode: options.ambiguous ? 'TOOL_CALL_FAILED' : null,
+        errorMessage: null, cycleId: plan.cycleId, decisionId: plan.decisionId });
+      return { status: options.ambiguous ? 'RECONCILE_REQUIRED' as const : 'ACCEPTED' as const,
       symbol: plan.symbol, clientOrderId: plan.clientOrderId, cycleId: plan.cycleId, decisionId: plan.decisionId,
       accepted: !options.ambiguous, exchangeOrderId: options.ambiguous ? null : 'order-1', reason: null,
-      timestamp: NOW, protectionMode: 'CLIENT_SIDE' as const, protectionVerified: false })),
+      timestamp: NOW, protectionMode: 'CLIENT_SIDE' as const, protectionVerified: false };
+    }),
     getOrderStatus: vi.fn(async () => { throw new Error('unused'); }),
     reconcile: vi.fn(async request => ({ outcome: 'NOT_FOUND' as const, symbol: request.symbol,
       clientOrderId: request.clientOrderId, cycleId: request.cycleId, decisionId: request.decisionId,
@@ -111,7 +127,8 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
   };
   if (options.observer) deps.observer = options.observer;
   const agent = new AuraAgent(agentConfigFromEnv(env(profile, String(options.armed ?? true))), deps);
-  return { agent, connector, market, execution, llm, evaluated, snapshot };
+  return { agent, connector, market, execution, llm, evaluated, snapshot,
+    setWriteConnected: (value: boolean) => { writeConnected = value; } };
 }
 
 describe('AURA orchestration', () => {
@@ -121,12 +138,18 @@ describe('AURA orchestration', () => {
     expect(() => parseSymbols('')).toThrow();
   });
 
-  it('constructs one inert connector shared by market and execution', () => {
+  it('constructs separate inert read and write MCP lanes', () => {
     const production = createProductionAgent({ ...env(), OKX_LIVE_PROFILE: 'competition' });
     const deps = (production as unknown as { deps: AgentDependencies }).deps;
     expect((deps.market as unknown as { connector: OkxConnector }).connector).toBe(deps.connector);
-    expect((deps.execution as unknown as { connector: OkxConnector }).connector).toBe(deps.connector);
+    const write = (deps.execution as unknown as { connector: OkxConnector }).connector;
+    expect(write).not.toBe(deps.connector);
+    expect((deps.execution as unknown as { readConnector: OkxConnector }).readConnector).toBe(deps.connector);
+    expect(deps.connector.readOnly).toBe(true);
+    expect(write.lane).toBe('WRITE');
+    expect(write.readOnly).toBe(false);
     expect(deps.connector.isConnected()).toBe(false);
+    expect(write.isConnected()).toBe(false);
   });
 
   it.each([
@@ -215,6 +238,34 @@ describe('AURA orchestration', () => {
     expect(h.agent.state).toBe('HALTED');
   });
 
+  it('reports separate lane readiness and blocks entry after a WRITE crash', async () => {
+    const h = harness();
+    const report = await h.agent.preflight();
+    expect(report.readLane?.status).toBe('READY');
+    expect(report.writeLane?.status).toBe('READY');
+    expect(report.readiness).toBe('READY_FOR_LIVE');
+    expect(report.checks.find(check => check.name === 'LIVE_TRADING_ARMED')?.detail).toBe('true');
+    expect(report.checks.find(check => check.name === 'INSTRUMENT:BTC-USDT')?.detail).toContain('minSize=');
+    expect(report.checks.find(check => check.name === 'FEE:ETH-USDT')?.detail).toContain('taker=');
+    h.agent.activate();
+    h.setWriteConnected(false);
+    expect((await h.agent.runSlowCycle()).status).toBe('BLOCKED');
+    expect(h.agent.state).toBe('DEGRADED');
+    expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
+  });
+
+  it('blocks readiness when a required discovered READ capability is missing', async () => {
+    const h = harness({ missingTool: 'market_get_candles' });
+    const report = await h.agent.preflight();
+    expect(report.passed).toBe(false);
+    expect(report.readiness).toBe('BLOCKED');
+    expect(report.blockers).toContain('MARKET_TOOLS');
+    expect(h.agent.activate()).toBe(false);
+    await h.agent.shutdown();
+  });
+
   it('does not rank or call the critic when exchange holdings appear while local monitor is flat', async () => {
     const h = harness(); await h.agent.preflight(); h.agent.activate();
     h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: 1, averageEntryPrice: 100, updatedAt: NOW }];
@@ -251,6 +302,19 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
+  it('bounds READ reconnect attempts and never submits while the lane stays down', async () => {
+    const h = harness(); await h.agent.preflight(); h.agent.activate();
+    await h.connector.disconnect();
+    const connect = vi.mocked(h.connector.connect);
+    const initialCalls = connect.mock.calls.length;
+    connect.mockRejectedValue(new Error('READ unavailable'));
+    for (let attempt = 0; attempt < 6; attempt += 1) await h.agent.runFastCycle();
+    expect(connect.mock.calls.length - initialCalls).toBe(3);
+    expect(h.agent.state).toBe('DEGRADED');
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
+  });
+
   it('publishes a rejected entry with certificate and sanitized performance', async () => {
     const snapshots: ObserverSnapshot[] = [];
     const h = harness({ llmFailure: true, observer: snapshot => { snapshots.push(snapshot); } });
@@ -262,6 +326,9 @@ describe('AURA orchestration', () => {
     expect(snapshots[0]?.llm?.status).toBe('TIMEOUT');
     expect(snapshots[0]?.riskCertificate?.verdict).toBe('REJECT');
     expect(snapshots[0]?.equity?.starting).toBe(10_000);
+    expect(h.agent.latestProvenance?.nodes.some(node => node.source === 'RISK')).toBe(true);
+    expect(h.agent.latestProvenance?.nodes.some(node => node.lane === 'WRITE')).toBe(false);
+    expect(h.agent.explainCurrentState('WHY_REJECTED').text).toContain('Risk rejected');
     expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
     await h.agent.shutdown();
   });
@@ -274,6 +341,17 @@ describe('AURA orchestration', () => {
     expect(snapshots[0]?.riskCertificate?.verdict).toBe('ALLOW');
     expect(snapshots[0]?.llm?.action).toBe('AGREE');
     expect(snapshots[0]?.equity?.current).toBe(10_000);
+    const judge = h.agent.getJudgeSnapshot();
+    expect(judge?.reasoning.selectedSymbol).toBe('BTC-USDT');
+    expect(judge?.reasoning.criticVerdict).toBe('AGREE');
+    expect(judge?.safety.liveArmed).toBe(true);
+    expect(judge?.atk.latestProvenance?.nodes.some(node => node.lane === 'WRITE'
+      && node.toolName === 'spot_place_order')).toBe(true);
+    expect(h.agent.explainCurrentState('WHY_SELECTED').text).toContain('BTC-USDT');
+    expect(h.agent.explainCurrentState('MCP_EVIDENCE').intent).toBe('MCP_EVIDENCE');
+    expect(Object.isFrozen(judge)).toBe(true);
+    expect(Object.isFrozen(judge?.functional.markets)).toBe(true);
+    expect(h.agent.getJudgeSnapshot()?.reasoning.perSymbolOqs['BTC-USDT']).toBe(80);
     await h.agent.shutdown();
   });
 

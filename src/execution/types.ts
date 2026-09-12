@@ -1,5 +1,8 @@
 import type { MarketProfile } from '../market/types.js';
+import type { OkxConnectorHealth } from '../okx/types.js';
+import type { AtkToolTrace } from '../okx/telemetry.js';
 import type { ApprovedOrderPlan, ProtectionMode } from '../risk/types.js';
+import type { ExecutionTools } from './discovery.js';
 
 export type OrderSide = 'BUY' | 'SELL';
 export type OrderKind = 'MARKET' | 'LIMIT';
@@ -86,6 +89,12 @@ export interface ReconciliationResult {
 /** Contract only; no exchange or process behavior is implemented. */
 export interface ExecutionEngine {
   start(): Promise<void>;
+  stop?(): Promise<void>;
+  getWriteHealth?(): Promise<OkxConnectorHealth>;
+  getWriteServerVersion?(): string | null;
+  getWriteToolNames?(): readonly string[];
+  getWriteTraces?(): readonly AtkToolTrace[];
+  getCapabilities?(): ExecutionTools | null;
   submitApprovedOrder(plan: ApprovedOrderPlan): Promise<OrderSubmissionResult>;
   getOrderStatus(symbol: string, clientOrderId: string): Promise<OrderStatus>;
   reconcile(request: OrderRequest): Promise<ReconciliationResult>;

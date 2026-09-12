@@ -1,7 +1,6 @@
 import { calculateFeatures } from '../features/calculate.js';
 import type { FeatureSnapshot } from '../features/types.js';
 import type { ExecutionEngine, OrderRequest, StartupExchangeSnapshot } from '../execution/types.js';
-import type { ExecutionTools } from '../execution/discovery.js';
 import type { LlmClient, LlmDecisionResult } from '../llm/types.js';
 import type { MarketAdapter, SpotFeeRate, TradingBalanceSnapshot } from '../market/types.js';
 import { hardStopBreached, promoteBreakEven, activateTrailing, updateAtrTrailingStop,
@@ -9,6 +8,7 @@ import { hardStopBreached, promoteBreakEven, activateTrailing, updateAtrTrailing
 import { InMemoryPositionMonitor } from '../monitor/monitor.js';
 import type { OpenPosition, PositionMonitor, StartupMonitorContext } from '../monitor/types.js';
 import type { OkxConnector } from '../okx/connector.js';
+import { REQUIRED_READ_CAPABILITIES } from '../okx/capabilities.js';
 import { transitionRegime } from '../regime/classify.js';
 import type { RegimeDecision, RegimeHysteresisState } from '../regime/types.js';
 import { evaluateEntryRisk } from '../risk/evaluate.js';
@@ -18,6 +18,10 @@ import { generateCandidate } from '../signal/generate.js';
 import { rankEntryCandidates } from '../signal/rank.js';
 import type { CandidateSignal, SignalCalibrationDiagnostics } from '../signal/types.js';
 import { validRiskConfig, type AgentConfig } from './config.js';
+import { ContextPulseCache, crossCheckIndicators, fetchPairEvidence,
+  type AtkContextPulse, type AtkCrossMarketContext, type AtkIndicatorCrossCheck } from './atk-evidence.js';
+import { DecisionProvenanceBuffer, traceNode, type DecisionProvenanceNode } from './provenance.js';
+import { ReadOnlyExplainService, freezeJudgeSnapshot, type ExplainIntent, type JudgeSnapshot } from './judge.js';
 
 export type AgentState = 'BOOTING' | 'PREFLIGHT' | 'OBSERVE_ONLY' | 'LIVE_READY' | 'LIVE' | 'DEGRADED' | 'HALTED';
 
@@ -54,6 +58,10 @@ export interface PreflightReport {
   state: AgentState;
   checks: readonly { name: string; passed: boolean; detail: string }[];
   positionSymbol: string | null;
+  readiness?: 'READY_FOR_OBSERVE' | 'READY_FOR_DEMO' | 'READY_FOR_LIVE' | 'BLOCKED';
+  readLane?: { status: 'READY' | 'FAILED'; serverVersion: string | null; profile: string; readOnly: boolean; toolCount: number };
+  writeLane?: { status: 'READY' | 'DISABLED' | 'FAILED'; serverVersion: string | null; profile: string; tools: readonly string[] };
+  blockers?: readonly string[];
 }
 
 export interface CycleResult {
@@ -82,7 +90,7 @@ export interface AgentDependencies {
 
 const requiredMarketTools = ['market_get_ticker', 'market_get_candles', 'market_get_orderbook', 'market_get_instruments'];
 const requiredAccountTools = ['account_get_balance', 'account_get_trade_fee'];
-const requiredSpotTools = ['spot_place_order', 'spot_get_orders', 'spot_get_fills'];
+const requiredSpotReadTools = ['spot_get_orders', 'spot_get_fills'];
 const emptyContext = (): StartupMonitorContext => ({ referencePrices: {}, openedAtBySymbol: {}, protectionPlans: {}, protectionModes: {} });
 const validTime = (now: number, timestamp: number, maxAge: number): boolean => Number.isSafeInteger(timestamp)
   && timestamp <= now && now - timestamp <= maxAge;
@@ -111,15 +119,66 @@ export class AuraAgent {
   private reconnectAttempts = 0;
   private sequence = 0;
   private mcpHealthy = false;
+  private readonly contextPulse: ContextPulseCache;
+  private readonly provenance = new DecisionProvenanceBuffer();
+  private cycleNodes: DecisionProvenanceNode[] = [];
+  private lastSnapshot: ObserverSnapshot | null = null;
+  private lastPreflight: PreflightReport | null = null;
+  private lastIndicatorChecks: AtkIndicatorCrossCheck[] = [];
+  private lastPairContext: AtkCrossMarketContext | null = null;
+  private lastPulse: AtkContextPulse | null = null;
+
+  private async bothLanesHealthy(): Promise<boolean> {
+    const read = await this.deps.connector.healthCheck();
+    const write = await this.deps.execution.getWriteHealth?.();
+    return read.connected && read.status === 'HEALTHY' && read.profile === this.config.profile
+      && (!write || (write.connected && write.status === 'HEALTHY' && write.profile === this.config.profile));
+  }
 
   constructor(readonly config: AgentConfig, private readonly deps: AgentDependencies) {
     this.monitor = deps.monitor ?? null;
     this.now = deps.now ?? Date.now;
+    this.contextPulse = new ContextPulseCache(config.contextPulseEnabled);
   }
 
   get state(): AgentState { return this.stateValue; }
   get positionMonitor(): PositionMonitor | null { return this.monitor; }
   get pendingOrderId(): string | null { return this.pending?.request.clientOrderId ?? null; }
+  get latestProvenance() { return this.provenance.latest(); }
+  getJudgeSnapshot(): JudgeSnapshot | null {
+    if (!this.lastSnapshot) return null;
+    const functional = structuredClone(this.lastSnapshot);
+    const traces = [...(this.deps.connector.getRecentTraces?.() ?? []),
+      ...(this.deps.execution.getWriteTraces?.() ?? [])]
+      .sort((a, b) => a.timestamp - b.timestamp).slice(-100);
+    const position = this.currentPosition(this.lastPositionForJudge);
+    return freezeJudgeSnapshot({ timestamp: functional.timestamp, functional,
+      reasoning: { selectedSymbol: functional.selectedSymbol,
+        perSymbolOqs: Object.fromEntries(Object.entries(functional.markets).map(([symbol, market]) => [symbol, market.oqs])),
+        criticVerdict: functional.llm?.action ?? null,
+        counterThesis: this.latestLlm?.status === 'SUCCESS' ? this.latestLlm.decision.counter_thesis : null,
+        riskCertificate: functional.riskCertificate },
+      atk: { readLane: this.lastPreflight?.readLane ? structuredClone(this.lastPreflight.readLane) : null,
+        writeLane: this.lastPreflight?.writeLane ? structuredClone(this.lastPreflight.writeLane) : null,
+        uniqueToolsUsed: [...new Set(traces.map(trace => trace.toolName))].sort(),
+        recentTraces: traces.map(trace => ({ ...trace })), latestProvenance: this.provenance.latest(),
+        indicatorCrossChecks: this.lastIndicatorChecks.map(item => ({ ...item })),
+        crossMarket: this.lastPairContext ? { ...this.lastPairContext, symbols: [...this.lastPairContext.symbols] as [string, string] } : null,
+        contextPulse: this.lastPulse ? { ...this.lastPulse } : null },
+      safety: { liveArmed: this.config.liveTradingArmed, riskMode: functional.riskMode,
+        protectionMode: position?.protectionMode ?? null, reconciliationPending: this.pending !== null,
+        degradedReason: functional.degradedReason } });
+  }
+  private lastPositionForJudge: OpenPosition | null = null;
+  explainCurrentState(intent: ExplainIntent) {
+    return new ReadOnlyExplainService(() => this.getJudgeSnapshot()).explainCurrentState(intent);
+  }
+
+  private node(source: DecisionProvenanceNode['source'], description: string,
+    symbol: string | null, result: string, success = true): void {
+    this.cycleNodes.push({ source, lane: null, toolName: null, symbol,
+      timestamp: this.now(), description, latencyMs: null, success, result });
+  }
 
   private check(checks: { name: string; passed: boolean; detail: string }[], name: string,
     passed: boolean, detail: string): void { checks.push({ name, passed, detail }); }
@@ -140,21 +199,65 @@ export class AuraAgent {
     if (this.stopping) return { passed: false, state: this.stateValue, checks: [], positionSymbol: null };
     this.stateValue = 'PREFLIGHT';
     const checks: { name: string; passed: boolean; detail: string }[] = [];
+    let readLaneReport: NonNullable<PreflightReport['readLane']> = { status: 'FAILED', serverVersion: null,
+      profile: this.config.profile, readOnly: false, toolCount: 0 };
+    let writeLaneReport: NonNullable<PreflightReport['writeLane']> = { status: 'FAILED', serverVersion: null,
+      profile: this.config.profile, tools: [] };
     this.check(checks, 'SYMBOLS', this.config.symbols.length > 0 && new Set(this.config.symbols).size === this.config.symbols.length,
       this.config.symbols.join(','));
     this.check(checks, 'MCP_MODE', this.config.connectorMode === 'mcp', 'Official MCP transport required');
     this.check(checks, 'PROFILE', this.deps.connector.profile === this.config.profile, this.config.profile);
+    this.check(checks, 'READ_ONLY', this.deps.connector.readOnly !== false, 'READ lane must use --read-only');
     this.check(checks, 'RISK_CONFIG', validRiskConfig(this.config.risk), 'Deterministic risk configuration');
     this.check(checks, 'LLM_CONFIG', this.config.llmConfigured, 'Market Critic configuration');
+    this.check(checks, 'LIVE_TRADING_ARMED', true, String(this.config.liveTradingArmed));
     try {
       await this.deps.execution.start();
       const health = await this.deps.connector.healthCheck();
-      this.mcpHealthy = health.connected && health.status === 'HEALTHY' && health.profile === this.config.profile;
-      this.check(checks, 'MCP_HEALTH', this.mcpHealthy, health.reason ?? health.status);
+      const writeHealth = await this.deps.execution.getWriteHealth?.();
+      const readReady = health.connected && health.status === 'HEALTHY' && health.profile === this.config.profile;
+      const writeReady = !writeHealth || (writeHealth.connected && writeHealth.status === 'HEALTHY'
+        && writeHealth.profile === this.config.profile);
+      this.mcpHealthy = readReady && writeReady;
+      this.check(checks, 'READ_LANE', readReady, health.reason ?? health.status);
+      this.check(checks, 'WRITE_LANE', writeReady, writeHealth?.reason ?? writeHealth?.status ?? 'Compatible execution adapter');
       const tools = new Set((await this.deps.connector.listTools()).map(tool => tool.name));
+      readLaneReport = { status: readReady ? 'READY' : 'FAILED',
+        serverVersion: this.deps.connector.getServerVersion?.() ?? null,
+        profile: this.config.profile, readOnly: this.deps.connector.readOnly === true,
+        toolCount: tools.size };
+      writeLaneReport = { status: writeReady ? 'READY' : 'FAILED',
+        serverVersion: this.deps.execution.getWriteServerVersion?.() ?? null,
+        profile: this.config.profile, tools: this.deps.execution.getWriteToolNames?.() ?? [] };
       for (const [name, names] of [['MARKET_TOOLS', requiredMarketTools], ['ACCOUNT_TOOLS', requiredAccountTools],
-        ['SPOT_TOOLS', requiredSpotTools]] as const) {
+        ['SPOT_READ_TOOLS', requiredSpotReadTools]] as const) {
         this.check(checks, name, names.every(tool => tools.has(tool)), names.filter(tool => !tools.has(tool)).join(',') || 'Available');
+      }
+      const readRegistry = this.deps.connector.getCapabilities?.();
+      if (readRegistry) this.check(checks, 'READ_CAPABILITIES', readRegistry.missing(REQUIRED_READ_CAPABILITIES).length === 0,
+        readRegistry.missing(REQUIRED_READ_CAPABILITIES).join(',') || 'Available');
+      let actualReadOnly = this.deps.connector.readOnly === true;
+      if (readRegistry?.has('SYSTEM_CAPABILITIES')) {
+        const tool = readRegistry.resolve('SYSTEM_CAPABILITIES')!;
+        const result = await this.deps.connector.callTool<unknown>(tool, {});
+        const capabilities = (result as { capabilities?: { readOnly?: unknown } })?.capabilities;
+        actualReadOnly = capabilities?.readOnly === true;
+        this.check(checks, 'SERVER_READ_ONLY', actualReadOnly, actualReadOnly
+          ? 'ATK server confirms read-only mode' : 'ATK server did not confirm read-only mode');
+      }
+      readLaneReport.readOnly = actualReadOnly;
+      if (this.deps.connector.readOnly === true && !actualReadOnly) readLaneReport.status = 'FAILED';
+      const writeNames = this.deps.execution.getWriteToolNames?.() ?? [];
+      if (writeNames.length > 0) this.check(checks, 'WRITE_CAPABILITIES',
+        writeNames.includes('spot_place_order') && writeNames.every(name => name.startsWith('spot_')),
+        writeNames.includes('spot_place_order') ? 'Spot order placement discovered' : 'Spot order placement missing');
+      const executionCapabilities = this.deps.execution.getCapabilities?.();
+      if (executionCapabilities) {
+        this.check(checks, 'EXECUTION_CAPABILITY', !!executionCapabilities.placeOrder
+          && executionCapabilities.clientOrderIdSupported, 'Spot order and client ID schema');
+        this.check(checks, 'RECONCILIATION_CAPABILITY', !!executionCapabilities.getOrder
+          && !!executionCapabilities.getOrders && !!executionCapabilities.getFills,
+        'READ lane order, open-order and fill queries');
       }
       for (const symbol of this.config.symbols) {
         const [meta, fee, orders, fills] = await Promise.all([
@@ -163,8 +266,10 @@ export class AuraAgent {
         ]);
         const validMeta = meta.symbol === symbol && meta.instrumentId === symbol
           && [meta.minOrderSize, meta.quantityStep, meta.tickSize].every(x => Number.isFinite(x) && x > 0);
-        this.check(checks, `INSTRUMENT:${symbol}`, validMeta, validMeta ? 'Size, lot and tick available' : 'Invalid metadata');
-        this.check(checks, `FEE:${symbol}`, fee.symbol === symbol && Number.isFinite(fee.takerRate), 'Fee readable');
+        this.check(checks, `INSTRUMENT:${symbol}`, validMeta, validMeta
+          ? `minSize=${meta.minOrderSize} lot=${meta.quantityStep} tick=${meta.tickSize}` : 'Invalid metadata');
+        this.check(checks, `FEE:${symbol}`, fee.symbol === symbol && Number.isFinite(fee.takerRate),
+          `taker=${fee.takerRate} maker=${fee.makerRate}`);
         this.check(checks, `ORDERS_FILLS:${symbol}`, orders.every(o => o.symbol === symbol)
           && fills.every(f => f.symbol === symbol), 'Read-only order/fill history');
         if (validMeta) this.metadata.set(symbol, meta);
@@ -192,13 +297,12 @@ export class AuraAgent {
       this.check(checks, 'MONITOR_RECONCILIATION', restored.status === 'RESTORED', restored.reason);
       const unresolvedOrders = snapshot.openOrders.length > 0 || this.pending !== null;
       this.check(checks, 'UNRESOLVED_ORDERS', !unresolvedOrders, unresolvedOrders ? 'Open or ambiguous order exists' : 'None');
-      const capabilities = (this.deps.execution as ExecutionEngine & {
-        getCapabilities?: () => ExecutionTools | null;
-      }).getCapabilities?.();
+      const capabilities = executionCapabilities;
       const protectionKnown = capabilities
         ? capabilities.clientOrderIdSupported && !!capabilities.getBalance
           && (capabilities.attachedProtectionSupported || !!capabilities.getFills)
-        : tools.has('spot_place_order') && tools.has('spot_get_fills');
+        : (writeNames.length ? writeNames.includes('spot_place_order') : tools.has('spot_place_order'))
+          && tools.has('spot_get_fills');
       this.check(checks, 'PROTECTION_CAPABILITY', protectionKnown,
         !protectionKnown ? 'No verified protection capability'
           : capabilities?.attachedProtectionSupported ? 'Exchange-side attached protection available'
@@ -207,14 +311,41 @@ export class AuraAgent {
       this.stateValue = passed && this.config.profile === 'live' && this.config.liveTradingArmed ? 'LIVE_READY' : 'OBSERVE_ONLY';
       if (!passed) this.degradedReason = checks.filter(item => !item.passed).map(item => item.name).join(',');
       else this.degradedReason = null;
-      return { passed, state: this.stateValue, checks, positionSymbol: restored.position?.symbol ?? null };
+      const readiness = !passed ? 'BLOCKED' : this.config.profile === 'demo' ? 'READY_FOR_DEMO'
+        : this.config.liveTradingArmed ? 'READY_FOR_LIVE' : 'READY_FOR_OBSERVE';
+      const report: PreflightReport = { passed, state: this.stateValue, checks, positionSymbol: restored.position?.symbol ?? null,
+        readiness, blockers: checks.filter(item => !item.passed).map(item => item.name),
+        readLane: readLaneReport, writeLane: writeLaneReport };
+      this.lastPreflight = report;
+      return report;
     } catch (error) {
       this.mcpHealthy = false;
       this.stateValue = 'OBSERVE_ONLY';
       const detail = error instanceof Error ? error.message : 'Unknown preflight error';
       this.degradedReason = detail;
+      try {
+        const health = await this.deps.connector.healthCheck();
+        readLaneReport = { status: health.connected && health.status === 'HEALTHY'
+          && this.deps.connector.readOnly === true ? 'READY' : 'FAILED',
+          serverVersion: this.deps.connector.getServerVersion?.() ?? null,
+          profile: this.config.profile, readOnly: this.deps.connector.readOnly === true,
+          toolCount: (await this.deps.connector.listTools()).length };
+      } catch { /* Preserve the last known READ report. */ }
+      try {
+        const health = await this.deps.execution.getWriteHealth?.();
+        if (health) writeLaneReport = { status: health.connected && health.status === 'HEALTHY'
+          && (this.deps.execution.getWriteToolNames?.() ?? ['spot_place_order']).includes('spot_place_order')
+          ? 'READY' : 'FAILED',
+          serverVersion: this.deps.execution.getWriteServerVersion?.() ?? null,
+          profile: this.config.profile, tools: this.deps.execution.getWriteToolNames?.() ?? [] };
+      } catch { /* Preserve the last known WRITE report. */ }
       this.check(checks, 'EXCHANGE_PREFLIGHT', false, detail);
-      return { passed: false, state: this.stateValue, checks, positionSymbol: (await this.monitor?.getOpenPosition())?.symbol ?? null };
+      const report: PreflightReport = { passed: false, state: this.stateValue, checks,
+        positionSymbol: (await this.monitor?.getOpenPosition())?.symbol ?? null,
+        readiness: 'BLOCKED', blockers: checks.filter(item => !item.passed).map(item => item.name),
+        readLane: readLaneReport, writeLane: writeLaneReport };
+      this.lastPreflight = report;
+      return report;
     }
   }
 
@@ -267,7 +398,7 @@ export class AuraAgent {
   }
 
   private async submitProtectiveExit(position: OpenPosition, price: number): Promise<void> {
-    if (this.pending || this.stateValue !== 'LIVE' || !this.deps.connector.isConnected()) return;
+    if (this.pending || this.stateValue !== 'LIVE' || !this.mcpHealthy) return;
     const id = this.nextId();
     const plan: ApprovedOrderPlan = { symbol: position.symbol, side: 'SELL', quantity: position.quantity,
       estimatedNotional: position.quantity * price, referencePrice: price,
@@ -402,39 +533,62 @@ export class AuraAgent {
   async runSlowCycle(): Promise<CycleResult> {
     return this.withLock(async () => {
       this.selected = null; this.latestLlm = null; this.latestCertificate = null;
+      this.lastIndicatorChecks = []; this.lastPairContext = null;
+      this.cycleNodes = [];
+      const provenanceCycleId = this.nextId();
+      const readBefore = this.deps.connector.getRecentTraces?.() ?? [];
+      const writeBefore = this.deps.execution.getWriteTraces?.() ?? [];
+      const readTraceStart = readBefore.at(-1)?.sequence ?? readBefore.length;
+      const writeTraceStart = writeBefore.at(-1)?.sequence ?? writeBefore.length;
       let result: CycleResult = { status: 'BLOCKED', selectedSymbol: null, reason: 'Not live' };
+      const finish = (next: CycleResult): CycleResult => { result = next; return next; };
       try {
         if (this.stateValue !== 'LIVE' && this.stateValue !== 'OBSERVE_ONLY') return result;
-        if (!this.deps.connector.isConnected()) { this.degrade('MCP disconnected'); return result; }
+        if (!await this.bothLanesHealthy()) { this.degrade('MCP lane disconnected');
+          return finish({ status: 'BLOCKED', selectedSymbol: null, reason: 'MCP lane disconnected' }); }
         await this.reconcilePending();
-        if (this.pending) return { status: 'BLOCKED', selectedSymbol: null, reason: 'Order reconciliation pending' };
+        if (this.pending) return finish({ status: 'BLOCKED', selectedSymbol: null, reason: 'Order reconciliation pending' });
         const position = await this.monitor?.getOpenPosition() ?? null;
         if (position) {
           result = { status: 'MONITORING', selectedSymbol: null, reason: await this.monitorHeld(true) };
+          this.node('LOCAL', 'Held-position protection and reconciliation', position.symbol, result.reason);
           return result;
         }
         const exchangeBeforeRanking = await this.deps.execution.getStartupSnapshot();
         if (exchangeBeforeRanking.profile !== this.config.profile || exchangeBeforeRanking.positions.length > 0
           || exchangeBeforeRanking.openOrders.length > 0) {
           this.degrade('Exchange holdings or orders changed while local monitor is flat');
-          return { status: 'BLOCKED', selectedSymbol: null, reason: this.degradedReason! };
+          return finish({ status: 'BLOCKED', selectedSymbol: null, reason: this.degradedReason! });
         }
         const evaluations: SymbolEvaluation[] = [];
         for (const symbol of this.config.symbols) {
           const evaluation = await this.evaluate(symbol, null);
           this.retain(evaluation);
           evaluations.push(evaluation);
+          this.node('LOCAL', 'Features, regime and opportunity score', symbol,
+            `${evaluation.regime.stableRegime}; OQS ${evaluation.candidate.opportunityScore}`);
         }
         const ranked = rankEntryCandidates(evaluations.map(item => item.candidate));
         const selected = ranked[0] ?? null;
-        if (!selected) return { status: 'HOLD', selectedSymbol: null, reason: 'No eligible entry' };
+        this.node('LOCAL', 'Deterministic cross-symbol ranking', selected?.symbol ?? null,
+          selected ? `Selected ${selected.symbol}` : 'No eligible entry');
+        if (!selected) return finish({ status: 'HOLD', selectedSymbol: null, reason: 'No eligible entry' });
         this.selected = selected;
-        if (this.stateValue !== 'LIVE' || this.pending || !this.deps.connector.isConnected())
-          return { status: 'BLOCKED', selectedSymbol: selected.symbol, reason: 'Observe-only or disconnected' };
+        if (this.stateValue !== 'LIVE' || this.pending || !await this.bothLanesHealthy())
+          return finish({ status: 'BLOCKED', selectedSymbol: selected.symbol, reason: 'Observe-only or disconnected' });
         const other = evaluations.filter(item => item.symbol !== selected.symbol)
           .sort((a, b) => b.candidate.opportunityScore - a.candidate.opportunityScore || a.symbol.localeCompare(b.symbol))[0];
-        if (!other) return { status: 'BLOCKED', selectedSymbol: selected.symbol, reason: 'Cross-market context unavailable' };
+        if (!other) return finish({ status: 'BLOCKED', selectedSymbol: selected.symbol, reason: 'Cross-market context unavailable' });
         const selectedEval = evaluations.find(item => item.symbol === selected.symbol)!;
+        const optionalEvidence = await Promise.allSettled([
+          crossCheckIndicators(this.deps.connector, selectedEval.feature),
+          fetchPairEvidence(this.deps.connector, selected.symbol, other.symbol, this.now()),
+          this.contextPulse.get(this.deps.connector, this.config.symbols, this.now()),
+        ]);
+        this.lastIndicatorChecks = optionalEvidence[0].status === 'fulfilled' ? optionalEvidence[0].value : [];
+        this.lastPairContext = optionalEvidence[1].status === 'fulfilled' ? optionalEvidence[1].value
+          : { symbols: [selected.symbol, other.symbol], status: 'UNAVAILABLE', spread: null, timestamp: this.now() };
+        this.lastPulse = optionalEvidence[2].status === 'fulfilled' ? optionalEvidence[2].value : null;
         this.latestLlm = await this.deps.llm.evaluateSelectedCandidate({ candidate: selected,
           crossMarket: { selectedSymbol: selected.symbol, selectedOQS: selected.opportunityScore,
             otherSymbol: other.symbol, otherOQS: other.candidate.opportunityScore,
@@ -442,7 +596,13 @@ export class AuraAgent {
           microstructure: { spreadBps: selectedEval.feature.spreadBps,
             obiTop5: selectedEval.feature.obiTop5, micropriceLeanBps: selectedEval.feature.micropriceLeanBps },
           position: { hasOpenLong: false, openLongSymbol: null },
-          recentMemory: this.monitor?.getRecentDecisionMemory() ?? [] });
+          recentMemory: this.monitor?.getRecentDecisionMemory() ?? [],
+          indicatorCrossChecks: this.lastIndicatorChecks,
+          atkCrossMarket: this.lastPairContext,
+          contextPulse: this.lastPulse });
+        this.node('LLM', 'Market Critic reviewed selected candidate', selected.symbol,
+          this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.action : this.latestLlm.status,
+          this.latestLlm.status === 'SUCCESS');
         const balance = await this.deps.market.getTradingBalanceSnapshot();
         const exchangeAtRisk = await this.deps.execution.getStartupSnapshot();
         const performance = await this.monitor!.getPerformanceState();
@@ -487,31 +647,47 @@ export class AuraAgent {
             this.monitor?.recordDecision({ symbol: selected.symbol, setupType: selected.setupType,
               regime: selected.regime, resultCategory: 'REJECTED_RISK', outcomeR: null, stopHit: null,
               timestamp: this.now() });
-            return { status: 'REJECTED', selectedSymbol: selected.symbol, reason: 'Approved size is below exchange minimum or lot step' };
+            return finish({ status: 'REJECTED', selectedSymbol: selected.symbol, reason: 'Approved size is below exchange minimum or lot step' });
           }
           risk = evaluateEntryRisk({ ...riskInput, requestedNotional: quantity * risk.plan.referencePrice });
         }
         this.latestCertificate = risk.certificate;
+        this.node('RISK', 'Deterministic Risk Certificate', selected.symbol,
+          risk.certificate.verdict, risk.certificate.verdict === 'ALLOW');
         if (exchangeAtRisk.profile !== this.config.profile || exchangeAtRisk.openOrders.length > 0
           || riskOpenPositions.length > 0 || await this.monitor?.getOpenPosition()) {
           this.degrade('Exchange position or open order appeared before execution');
-          return { status: 'BLOCKED', selectedSymbol: selected.symbol, reason: this.degradedReason! };
+          return finish({ status: 'BLOCKED', selectedSymbol: selected.symbol, reason: this.degradedReason! });
         }
         if (!risk.decision.approved) {
           this.monitor?.recordDecision({ symbol: selected.symbol, setupType: selected.setupType,
             regime: selected.regime, resultCategory: this.latestLlm.status === 'SUCCESS' ? 'REJECTED_RISK' : 'REJECTED_LLM',
             outcomeR: null, stopHit: null, timestamp: this.now() });
-          return { status: 'REJECTED', selectedSymbol: selected.symbol, reason: risk.decision.reason };
+          return finish({ status: 'REJECTED', selectedSymbol: selected.symbol, reason: risk.decision.reason });
         }
         if (risk.certificate.verdict !== 'ALLOW' || !risk.plan)
-          return { status: 'BLOCKED', selectedSymbol: selected.symbol, reason: 'Risk certificate did not allow' };
+          return finish({ status: 'BLOCKED', selectedSymbol: selected.symbol, reason: 'Risk certificate did not allow' });
         const submission = await this.submit(risk.plan);
-        return { status: submission === 'ACCEPTED' ? 'SUBMITTED' : 'BLOCKED',
-          selectedSymbol: selected.symbol, reason: submission };
+        this.node('LOCAL', 'Execution submission and reconciliation', selected.symbol, submission,
+          submission === 'ACCEPTED');
+        return finish({ status: submission === 'ACCEPTED' ? 'SUBMITTED' : 'BLOCKED',
+          selectedSymbol: selected.symbol, reason: submission });
       } catch (error) {
         this.degrade(error instanceof Error ? error.message : 'Cycle failure');
-        return { status: 'BLOCKED', selectedSymbol: this.selected?.symbol ?? null, reason: this.degradedReason ?? 'Cycle failure' };
-      } finally { await this.publish(); }
+        this.node('LOCAL', 'Cycle failed closed', this.selected?.symbol ?? null, 'BLOCKED', false);
+        return finish({ status: 'BLOCKED', selectedSymbol: this.selected?.symbol ?? null, reason: this.degradedReason ?? 'Cycle failure' });
+      } finally {
+        const newTraces = (all: readonly import('../okx/telemetry.js').AtkToolTrace[], marker: number) =>
+          all.some(trace => trace.sequence !== undefined)
+            ? all.filter(trace => (trace.sequence ?? 0) > marker) : all.slice(marker);
+        const traces = [...newTraces(this.deps.connector.getRecentTraces?.() ?? [], readTraceStart),
+          ...newTraces(this.deps.execution.getWriteTraces?.() ?? [], writeTraceStart)];
+        this.provenance.record({ cycleId: provenanceCycleId, timestamp: this.now(),
+          selectedSymbol: this.selected?.symbol ?? null,
+          result: result.status,
+          nodes: [...traces.map(traceNode), ...this.cycleNodes].sort((a, b) => a.timestamp - b.timestamp) });
+        await this.publish();
+      }
     }, { status: 'SKIPPED', selectedSymbol: null, reason: 'Cycle already running or stopping' });
   }
 
@@ -519,9 +695,7 @@ export class AuraAgent {
     await this.withLock(async () => {
       if (this.stateValue === 'HALTED') return;
       try {
-        if (!this.deps.connector.isConnected()) { this.degrade('MCP disconnected'); await this.recover(); return; }
-        const health = await this.deps.connector.healthCheck();
-        if (!health.connected || health.status !== 'HEALTHY') { this.degrade('MCP unhealthy'); await this.recover(); return; }
+        if (!await this.bothLanesHealthy()) { this.degrade('MCP lane unhealthy'); await this.recover(); return; }
         this.mcpHealthy = true;
         await this.reconcilePending();
         if (this.stateValue === 'DEGRADED') {
@@ -538,6 +712,7 @@ export class AuraAgent {
     this.reconnectAttempts += 1;
     try {
       await this.deps.connector.connect();
+      await this.deps.execution.start();
       if (!this.deps.connector.isConnected()) return;
       if (this.pending) { await this.reconcilePending(); if (this.pending) return; }
       const report = await this.preflight();
@@ -592,14 +767,15 @@ export class AuraAgent {
     await this.active?.catch(() => undefined);
     this.stateValue = 'HALTED';
     await this.publish();
+    await this.deps.execution.stop?.();
     await this.deps.connector.disconnect();
     this.mcpHealthy = false;
   }
 
   private async publish(): Promise<void> {
-    if (!this.deps.observer) return;
     try {
       const position = this.currentPosition(await this.monitor?.getOpenPosition() ?? null);
+      this.lastPositionForJudge = position;
       const equity = await this.monitor?.getEquitySnapshot() ?? null;
       const markets = Object.fromEntries([...this.evaluations].map(([symbol, item]) => [symbol, {
         close: item.feature.close, spreadBps: item.feature.spreadBps,
@@ -607,7 +783,7 @@ export class AuraAgent {
         candidateAction: item.candidate.action, oqs: item.candidate.opportunityScore,
         edgeCostRatio: item.candidate.edgeToCostRatio,
       }]));
-      await this.deps.observer({ timestamp: this.now(), state: this.stateValue, mcpHealthy: this.mcpHealthy,
+      const snapshot: ObserverSnapshot = { timestamp: this.now(), state: this.stateValue, mcpHealthy: this.mcpHealthy,
         symbols: [...this.config.symbols], markets, selectedSymbol: this.selected?.symbol ?? null,
         selectedOQS: this.selected?.opportunityScore ?? null,
         llm: this.latestLlm ? { status: this.latestLlm.status,
@@ -622,7 +798,9 @@ export class AuraAgent {
           dailyPnl: equity.dailyPnl, dailyReturnPct: equity.dailyReturn * 100,
           currentDrawdownPct: equity.currentDrawdown * 100,
           maximumDrawdownPct: equity.maximumDrawdown * 100 } : null,
-        riskMode: this.latestCertificate?.riskMode ?? null, degradedReason: this.degradedReason });
+        riskMode: this.latestCertificate?.riskMode ?? null, degradedReason: this.degradedReason };
+      this.lastSnapshot = structuredClone(snapshot);
+      await this.deps.observer?.(structuredClone(snapshot));
     } catch { /* The observer is never a decision authority. */ }
   }
 }

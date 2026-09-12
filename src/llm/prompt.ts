@@ -52,5 +52,18 @@ export function buildSelectedCandidateInput(context: SelectedCandidateContext, s
       otherSymbol: crossMarket.otherSymbol, otherOQS: crossMarket.otherOQS,
       otherRegime: crossMarket.otherRegime,
     },
+    ...(context.indicatorCrossChecks ? { indicatorCrossChecks: context.indicatorCrossChecks.slice(0, 3)
+      .map(item => ({ symbol: item.symbol, indicator: item.indicator,
+        localValue: Number.isFinite(item.localValue) ? item.localValue : null,
+        atkValue: item.atkValue !== null && Number.isFinite(item.atkValue) ? item.atkValue : null,
+        difference: item.difference !== null && Number.isFinite(item.difference) ? item.difference : null,
+        status: item.status })) } : {}),
+    ...(context.atkCrossMarket ? { atkCrossMarket: { symbols: context.atkCrossMarket.symbols,
+      status: context.atkCrossMarket.status,
+      spread: context.atkCrossMarket.spread !== null && Number.isFinite(context.atkCrossMarket.spread)
+        ? context.atkCrossMarket.spread : null } } : {}),
+    ...(context.contextPulse ? { contextPulse: {
+      newsShock: context.contextPulse.newsShock, sentiment: context.contextPulse.sentiment,
+      macroEventSoon: context.contextPulse.macroEventSoon } } : {}),
   });
 }

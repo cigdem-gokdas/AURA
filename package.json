@@ -8,8 +8,8 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest --passWithNoTests",
+    "test": "vitest run --root .",
+    "test:watch": "vitest --root .",
     "dev:web": "vite --config vite.config.ts",
     "agent:preflight": "tsx src/main.ts preflight",
     "agent:calibrate": "tsx src/main.ts calibrate",

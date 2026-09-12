@@ -28,3 +28,12 @@ export function okxConnectorConfigFromEnv(
     liveProfileName: env.OKX_LIVE_PROFILE?.trim() || null,
   };
 }
+
+export function atkLaneConfigFromEnv(
+  env: Readonly<Record<string, string | undefined>>,
+  lane: 'READ' | 'WRITE',
+): OkxConnectorConfig {
+  const base = okxConnectorConfigFromEnv(env);
+  return { ...base, lane, readOnly: lane === 'READ',
+    modules: lane === 'READ' ? ['market', 'account', 'spot', ...(env.ATK_CONTEXT_PULSE === 'true' ? ['news'] : [])] : ['spot'] };
+}

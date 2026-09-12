@@ -11,6 +11,8 @@ import {
   type OkxToolDefinition,
 } from './types.js';
 import { okxConnectorConfigFromEnv } from './config.js';
+import { AtkCapabilityRegistry, type AtkCapability } from './capabilities.js';
+import { AtkTraceBuffer, type AtkToolTrace } from './telemetry.js';
 
 export interface OkxMcpV2Session {
   client: Client;
@@ -20,12 +22,19 @@ export interface OkxMcpV2Session {
 /** The exchange boundary never chooses a fallback transport or profile. */
 export interface OkxConnector {
   readonly profile: 'demo' | 'live';
+  readonly lane?: 'READ' | 'WRITE';
+  readonly readOnly?: boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   isConnected(): boolean;
   healthCheck(): Promise<OkxConnectorHealth>;
   listTools(): Promise<OkxToolDefinition[]>;
-  callTool<T>(toolName: string, args: Record<string, unknown>): Promise<T>;
+  callTool<T>(toolName: string, args: Record<string, unknown>, traceContext?: { cycleId?: string; decisionId?: string }): Promise<T>;
+  getCapabilities?(): AtkCapabilityRegistry;
+  getServerVersion?(): string | null;
+  getRecentTraces?(): readonly AtkToolTrace[];
+  callCapability?<T>(capability: AtkCapability, args: Record<string, unknown>,
+    traceContext?: { cycleId?: string; decisionId?: string }): Promise<T>;
 }
 
 export type OkxMcpSessionFactory = (
@@ -105,25 +114,28 @@ function selectedProfile(config: OkxConnectorConfig): string {
 
 function validatedModules(config: OkxConnectorConfig): string {
   const modules = new Set(config.modules);
-  if (
-    modules.size !== REQUIRED_MODULES.length ||
-    REQUIRED_MODULES.some((module) => !modules.has(module))
-  ) {
+  const required = config.lane === 'READ' ? ['market', 'account', 'spot', ...(modules.has('news') ? ['news'] : [])]
+    : config.lane === 'WRITE' ? ['spot'] : REQUIRED_MODULES;
+  if (modules.size !== required.length || required.some(module => !modules.has(module))
+    || (config.lane === 'READ' && config.readOnly !== true)
+    || (config.lane === 'WRITE' && config.readOnly === true)) {
     throw new OkxConnectorError(
       'PROFILE_CONFIGURATION_ERROR',
-      'MCP modules must be market,spot,account',
+      'Invalid MCP lane scope or read-only setting',
     );
   }
-  return REQUIRED_MODULES.join(',');
+  return required.join(',');
 }
 
 function sanitizedEnvironment(): Record<string, string> {
-  const env = getDefaultEnvironment();
-  delete env.OKX_API_KEY;
-  delete env.OKX_SECRET_KEY;
-  delete env.OKX_PASSPHRASE;
-  delete env.OKX_API_BASE_URL;
-  delete env.OKX_SITE;
+  const defaults = getDefaultEnvironment();
+  const env: Record<string, string> = {};
+  // Keep this allowlist even though the current MCP SDK already returns only
+  // these keys: a future SDK must not forward API keys to either child lane.
+  for (const key of ['HOME', 'LOGNAME', 'PATH', 'SHELL', 'TERM', 'USER']) {
+    const value = defaults[key];
+    if (value !== undefined) env[key] = value;
+  }
   return env;
 }
 
@@ -133,6 +145,9 @@ export class OkxMcpConnector implements OkxConnector {
   private connected = false;
   private toolDefinitions: OkxToolDefinition[] = [];
   private connecting: Promise<void> | null = null;
+  private registry = new AtkCapabilityRegistry([]);
+  private serverVersion: string | null = null;
+  private readonly traces = new AtkTraceBuffer();
 
   constructor(
     readonly config: OkxConnectorConfig,
@@ -148,6 +163,11 @@ export class OkxMcpConnector implements OkxConnector {
   get profile(): 'demo' | 'live' {
     return this.config.auraProfile;
   }
+  get lane(): 'READ' | 'WRITE' { return this.config.lane ?? 'READ'; }
+  get readOnly(): boolean { return this.config.readOnly === true; }
+  getCapabilities(): AtkCapabilityRegistry { return this.registry; }
+  getServerVersion(): string | null { return this.serverVersion; }
+  getRecentTraces(): readonly AtkToolTrace[] { return this.traces.recent(); }
 
   async connect(): Promise<void> {
     if (this.connected) return;
@@ -174,6 +194,7 @@ export class OkxMcpConnector implements OkxConnector {
       profile,
       '--modules',
       modules,
+      ...(this.readOnly ? ['--read-only'] : []),
       this.profile === 'demo' ? '--demo' : '--live',
     ];
     let session: OkxMcpV2Session | null = null;
@@ -205,6 +226,8 @@ export class OkxMcpConnector implements OkxConnector {
       });
       this.session = session;
       this.toolDefinitions = definitions;
+      this.registry = new AtkCapabilityRegistry(definitions);
+      this.serverVersion = session.client.getServerVersion?.()?.version ?? null;
       this.connected = true;
       const previousOnClose = session.transport.onclose;
       session.transport.onclose = () => {
@@ -214,6 +237,7 @@ export class OkxMcpConnector implements OkxConnector {
           if (this.session === session) {
             this.session = null;
             this.toolDefinitions = [];
+            this.registry = new AtkCapabilityRegistry([]);
             this.connected = false;
           }
         }
@@ -233,6 +257,7 @@ export class OkxMcpConnector implements OkxConnector {
     const session = this.session;
     this.session = null;
     this.toolDefinitions = [];
+    this.registry = new AtkCapabilityRegistry([]);
     this.connected = false;
     if (!session) return;
     try {
@@ -272,6 +297,7 @@ export class OkxMcpConnector implements OkxConnector {
   async callTool<T>(
     toolName: string,
     args: Record<string, unknown>,
+    traceContext: { cycleId?: string; decisionId?: string } = {},
   ): Promise<T> {
     if (!this.connected || !this.session) {
       throw new OkxConnectorError(
@@ -285,13 +311,29 @@ export class OkxMcpConnector implements OkxConnector {
         `OKX MCP tool ${toolName} is unavailable`,
       );
     }
+    if (this.config.lane === 'READ' && !/^(market_get_|market_list_|account_get_|spot_get_|news_get_|news_search$|news_list_|event_get_|event_browse$|trade_get_|system_get_)/.test(toolName)) {
+      throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'READ lane forbids state-changing MCP tools');
+    }
+    if (this.config.lane === 'WRITE' && toolName !== 'spot_place_order' && toolName !== 'spot_place_algo_order') {
+      throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'WRITE lane exposes only spot execution tools');
+    }
     assertNoCredentials(args);
+    const started = Date.now();
+    let success = false;
+    let errorCode: string | null = null;
     try {
       const result = await this.session.client.callTool({
         name: toolName,
         arguments: args,
       });
-      const rawPayload: unknown = result.structuredContent;
+      let rawPayload: unknown = result.structuredContent;
+      if (!rawPayload && Array.isArray(result.content)) {
+        const texts = result.content.filter(part => part.type === 'text');
+        if (texts.length === 1 && texts[0]?.type === 'text') {
+          try { rawPayload = JSON.parse(texts[0].text); }
+          catch { rawPayload = null; }
+        }
+      }
       const payload =
         rawPayload &&
         typeof rawPayload === 'object' &&
@@ -315,13 +357,29 @@ export class OkxMcpConnector implements OkxConnector {
           `Invalid result from OKX MCP tool ${toolName}`,
         );
       }
+      success = true;
       return payload.data as T;
     } catch (error) {
-      if (error instanceof OkxConnectorError) throw error;
+      if (error instanceof OkxConnectorError) { errorCode = error.category; throw error; }
+      errorCode = 'TOOL_CALL_FAILED';
       throw new OkxConnectorError(
         'TOOL_CALL_FAILED',
         `OKX MCP tool ${toolName} failed`,
       );
+    } finally {
+      this.traces.record({ timestamp: started, lane: this.lane, toolName,
+        purpose: this.registry.reverse(toolName) ?? 'UNMAPPED',
+        symbol: typeof args.instId === 'string' ? args.instId : null,
+        profile: this.profile, latencyMs: Math.max(0, Date.now() - started), success,
+        errorCode, errorMessage: errorCode ? `MCP ${errorCode}` : null,
+        cycleId: traceContext.cycleId ?? null, decisionId: traceContext.decisionId ?? null });
     }
+  }
+
+  async callCapability<T>(capability: AtkCapability, args: Record<string, unknown>,
+    traceContext?: { cycleId?: string; decisionId?: string }): Promise<T> {
+    const toolName = this.registry.resolve(capability);
+    if (!toolName) throw new OkxConnectorError('TOOL_NOT_AVAILABLE', `Missing ${capability} capability`);
+    return this.callTool<T>(toolName, args, traceContext);
   }
 }

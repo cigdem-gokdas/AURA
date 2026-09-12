@@ -17,6 +17,8 @@ export interface OkxConnectorConfig {
   auraProfile: MarketProfile;
   demoProfileName: string | null;
   liveProfileName: string | null;
+  lane?: 'READ' | 'WRITE';
+  readOnly?: boolean;
 }
 
 export interface OkxConnectorHealth {

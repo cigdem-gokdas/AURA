@@ -89,19 +89,40 @@ export class OkxExecutionEngine implements ExecutionEngine {
     private readonly connector: OkxConnector,
     private readonly trackedSymbols: readonly string[] = ['BTC-USDT', 'ETH-USDT'],
     private readonly now: () => number = Date.now,
+    private readonly readConnector: OkxConnector = connector,
   ) {}
 
   async start(): Promise<void> {
+    if (this.readConnector !== this.connector && (this.readConnector.lane !== 'READ'
+      || this.readConnector.readOnly !== true || this.connector.lane !== 'WRITE'
+      || this.connector.readOnly === true || this.readConnector.profile !== this.connector.profile)) {
+      throw new OkxConnectorError('PROFILE_CONFIGURATION_ERROR', 'Execution requires isolated read-only READ and spot WRITE lanes');
+    }
+    await this.readConnector.connect();
     await this.connector.connect();
-    this.tools = discoverExecutionTools(await this.connector.listTools());
+    const [readTools, writeTools] = await Promise.all([this.readConnector.listTools(), this.connector.listTools()]);
+    if (this.readConnector !== this.connector && !writeTools.some(tool => tool.name === 'spot_place_order')) {
+      throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'WRITE lane lacks spot order placement');
+    }
+    const readQueries = readTools.filter(tool => tool.name.startsWith('spot_get_')
+      || tool.name.startsWith('account_get_'));
+    const writeActions = writeTools.filter(tool => tool.name === 'spot_place_order'
+      || tool.name === 'spot_place_algo_order');
+    this.tools = discoverExecutionTools([...readQueries, ...writeActions]);
   }
+
+  async stop(): Promise<void> { await this.connector.disconnect(); }
+  async getWriteHealth() { return this.connector.healthCheck(); }
+  getWriteServerVersion(): string | null { return this.connector.getServerVersion?.() ?? null; }
+  getWriteToolNames(): readonly string[] { return this.connector.getCapabilities?.().names() ?? []; }
+  getWriteTraces() { return this.connector.getRecentTraces?.() ?? []; }
 
   getCapabilities(): ExecutionTools | null {
     return this.tools ? { ...this.tools } : null;
   }
 
   private connected(): boolean {
-    return this.tools !== null && this.connector.isConnected();
+    return this.tools !== null && this.connector.isConnected() && this.readConnector.isConnected();
   }
 
   private submission(plan: ApprovedOrderPlan, status: OrderSubmissionResult['status'],
@@ -133,7 +154,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
     if (plan.side === 'SELL') {
       if (!tools.getBalance) return this.submission(plan, 'CONNECTOR_FAILURE', null, 'Balance tool unavailable');
       try {
-        const balances = this.parseBalances(await this.connector.callTool(tools.getBalance, {}));
+        const balances = this.parseBalances(await this.readConnector.callTool(tools.getBalance, {}));
         const owned = balances.find(balance => balance.currency === baseCurrency(plan.symbol))?.available ?? 0;
         if (owned - (this.reservedSellQuantity.get(plan.symbol) ?? 0) < plan.quantity) {
           return this.submission(plan, 'REJECTED', null, 'Insufficient unreserved owned spot balance');
@@ -157,7 +178,8 @@ export class OkxExecutionEngine implements ExecutionEngine {
     }
     let result: unknown;
     try {
-      result = await this.connector.callTool(tools.placeOrder, args);
+      result = await this.connector.callTool(tools.placeOrder, args,
+        { cycleId: plan.cycleId, decisionId: plan.decisionId });
     } catch {
       return this.submission(plan, 'RECONCILE_REQUIRED', null, 'Order outcome ambiguous after MCP call');
     }
@@ -185,7 +207,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
   }
 
   private async verifyAttachedProtection(plan: ApprovedOrderPlan, orderId: string): Promise<boolean> {
-    if (!this.connector.isConnected()) return false;
+    if (!this.readConnector.isConnected()) return false;
     const expectedTp = plan.referencePrice + plan.protection.stopDistanceAbsolute * plan.protection.takeProfitR;
     const pricesMatch = (value: unknown): boolean => {
       const algo = record(value);
@@ -194,14 +216,14 @@ export class OkxExecutionEngine implements ExecutionEngine {
     };
     if (this.tools?.getOrder) {
       try {
-        const orderRows = rows(await this.connector.callTool(this.tools.getOrder, { instId: plan.symbol, ordId: orderId }));
+        const orderRows = rows(await this.readConnector.callTool(this.tools.getOrder, { instId: plan.symbol, ordId: orderId }));
         const row = orderRows.find(item => item.instId === plan.symbol && item.ordId === orderId);
         if (Array.isArray(row?.attachAlgoOrds) && row.attachAlgoOrds.some(pricesMatch)) return true;
       } catch { /* Try the dedicated algo-order query next. */ }
     }
     if (this.tools?.getAlgoOrders) {
       try {
-        const algoRows = rows(await this.connector.callTool(this.tools.getAlgoOrders, { status: 'pending', instId: plan.symbol }));
+        const algoRows = rows(await this.readConnector.callTool(this.tools.getAlgoOrders, { status: 'pending', instId: plan.symbol }));
         return algoRows.some(row => row.instId === plan.symbol
           && (row.ordId === orderId || row.clOrdId === plan.clientOrderId
             || row.algoClOrdId === plan.clientOrderId || row.attachAlgoClOrdId === plan.clientOrderId)
@@ -229,7 +251,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
 
   private async queryOrders(symbol: string, status: 'open' | 'history'): Promise<Row[]> {
     const tool = this.tools?.getOrders;
-    return tool ? rows(await this.connector.callTool(tool, { status, instId: symbol })) : [];
+    return tool ? rows(await this.readConnector.callTool(tool, { status, instId: symbol })) : [];
   }
 
   async getOrderStatus(symbol: string, clientOrderId: string): Promise<OrderStatus> {
@@ -238,7 +260,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
     let lookupFailed = false;
     if (lookup) {
       try {
-        const found = rows(await this.connector.callTool(lookup, { instId: symbol, clOrdId: clientOrderId }));
+        const found = rows(await this.readConnector.callTool(lookup, { instId: symbol, clOrdId: clientOrderId }));
         const row = found.find(item => item.instId === symbol && item.clOrdId === clientOrderId);
         if (row) return parseOrder(row, symbol, clientOrderId);
       } catch { lookupFailed = true; }
@@ -266,7 +288,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
       let order: OrderStatus | null = null;
       if (request.exchangeOrderId && this.tools?.getOrder) {
         try {
-          const found = rows(await this.connector.callTool(this.tools.getOrder, {
+          const found = rows(await this.readConnector.callTool(this.tools.getOrder, {
             instId: request.symbol, ordId: request.exchangeOrderId,
           }));
           const exact = found.find(row => row.instId === request.symbol && row.ordId === request.exchangeOrderId);
@@ -290,7 +312,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
       }
       const fillTool = this.tools?.getFills;
       if (fillTool) {
-        const fillRows = rows(await this.connector.callTool(fillTool, { instId: request.symbol, archive: false }));
+        const fillRows = rows(await this.readConnector.callTool(fillTool, { instId: request.symbol, archive: false }));
         const matched = fillRows.find(row => row.instId === request.symbol
           && (row.clOrdId === request.clientOrderId || (!!request.exchangeOrderId && row.ordId === request.exchangeOrderId)));
         if (matched) return finish('FILLED', order, null, 'Matching recent fill found');
@@ -309,7 +331,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
     if (!tools.getBalance || !tools.getTradeFee || !tools.getOrders || !tools.getFills) {
       throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'Startup reconciliation tools unavailable');
     }
-    const balanceResponse = await this.connector.callTool(tools.getBalance, {});
+    const balanceResponse = await this.readConnector.callTool(tools.getBalance, {});
     const balances = this.parseBalances(balanceResponse);
     const totalEquityUsd = numeric(rows(balanceResponse)[0]?.totalEq);
     if (totalEquityUsd === null || totalEquityUsd < 0) throw new OkxConnectorError('CONNECTOR_PROTOCOL_ERROR', 'Malformed total equity');
@@ -331,13 +353,13 @@ export class OkxExecutionEngine implements ExecutionEngine {
       if (tools.getOrder) {
         for (const order of openOrders.filter(item => item.symbol === symbol && item.clientOrderId)) {
           try {
-            const queried = rows(await this.connector.callTool(tools.getOrder, { instId: symbol, clOrdId: order.clientOrderId }));
+            const queried = rows(await this.readConnector.callTool(tools.getOrder, { instId: symbol, clOrdId: order.clientOrderId }));
             const exact = queried.find(item => item.instId === symbol && item.clOrdId === order.clientOrderId);
             if (exact) Object.assign(order, parseOrder(exact, symbol, order.clientOrderId));
           } catch { /* The open-order listing still proves this order exists. */ }
         }
       }
-      const fills = rows(await this.connector.callTool(tools.getFills, { instId: symbol, archive: false }));
+      const fills = rows(await this.readConnector.callTool(tools.getFills, { instId: symbol, archive: false }));
       for (const row of fills) {
         if (row.instId !== symbol) throw new OkxConnectorError('CONNECTOR_PROTOCOL_ERROR', 'Fill symbol mismatch');
         const orderId = text(row.ordId), quantity = numeric(row.fillSz), price = numeric(row.fillPx);
@@ -345,7 +367,7 @@ export class OkxExecutionEngine implements ExecutionEngine {
         recentFills.push({ symbol, orderId, clientOrderId: text(row.clOrdId), quantity, price,
           timestamp: numeric(row.ts, this.now())! });
       }
-      const fees = rows(await this.connector.callTool(tools.getTradeFee, { instType: 'SPOT', instId: symbol }));
+      const fees = rows(await this.readConnector.callTool(tools.getTradeFee, { instType: 'SPOT', instId: symbol }));
       const fee = fees[0];
       const makerRate = numeric(fee?.maker), takerRate = numeric(fee?.taker);
       if (!fee || makerRate === null || takerRate === null) throw new OkxConnectorError('CONNECTOR_PROTOCOL_ERROR', 'Malformed fee rate');

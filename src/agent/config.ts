@@ -13,6 +13,7 @@ export interface AgentConfig {
   maxReconnectAttempts: number;
   maxHoldingMs: number;
   llmConfigured: boolean;
+  contextPulseEnabled: boolean;
   risk: RiskConfig;
 }
 
@@ -53,6 +54,8 @@ export function agentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AgentC
   if (env.LIVE_TRADING_ARMED !== undefined && env.LIVE_TRADING_ARMED !== 'true' && env.LIVE_TRADING_ARMED !== 'false')
     throw new Error('LIVE_TRADING_ARMED must be true or false');
   if (env.PRIMARY_BAR !== undefined && env.PRIMARY_BAR !== '3m') throw new Error('PRIMARY_BAR must be 3m');
+  if (env.ATK_CONTEXT_PULSE !== undefined && env.ATK_CONTEXT_PULSE !== 'true' && env.ATK_CONTEXT_PULSE !== 'false')
+    throw new Error('ATK_CONTEXT_PULSE must be true or false');
   return {
     symbols, profile: env.OKX_PROFILE, connectorMode: 'mcp',
     liveTradingArmed: env.LIVE_TRADING_ARMED === 'true', primaryBar: '3m',
@@ -60,6 +63,7 @@ export function agentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AgentC
     fastLoopIntervalMs: positiveInteger(env.FAST_LOOP_INTERVAL_MS ?? env.SAFETY_LOOP_MS, 7_000, 'FAST_LOOP_INTERVAL_MS'),
     maxReconnectAttempts: positiveInteger(env.MAX_RECONNECT_ATTEMPTS, 3, 'MAX_RECONNECT_ATTEMPTS'),
     maxHoldingMs: positiveInteger(env.MAX_HOLDING_MS, 86_400_000, 'MAX_HOLDING_MS'),
-    llmConfigured: openAiConfigFromEnv(env) !== null, risk: riskConfigFromEnv(env),
+    llmConfigured: openAiConfigFromEnv(env) !== null,
+    contextPulseEnabled: env.ATK_CONTEXT_PULSE === 'true', risk: riskConfigFromEnv(env),
   };
 }

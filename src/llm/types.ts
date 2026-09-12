@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { MarketRegime } from '../regime/types.js';
 import type { CandidateSignal } from '../signal/types.js';
 import type { DecisionMemorySummary } from '../memory/types.js';
+import type { AtkContextPulse, AtkCrossMarketContext, AtkIndicatorCrossCheck } from '../agent/atk-evidence.js';
 
 export const LlmDecisionSchema = z.strictObject({
   action: z.enum(['AGREE', 'DISAGREE', 'ABSTAIN']),
@@ -48,6 +49,9 @@ export interface SelectedCandidateContext {
   /** Position size is deliberately absent from the LLM boundary. */
   position: { hasOpenLong: boolean; openLongSymbol: string | null };
   recentMemory: readonly DecisionMemorySummary[];
+  indicatorCrossChecks?: readonly AtkIndicatorCrossCheck[];
+  atkCrossMarket?: AtkCrossMarketContext;
+  contextPulse?: AtkContextPulse | null;
 }
 
 export interface LlmTokenUsage {

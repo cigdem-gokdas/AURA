@@ -5,16 +5,17 @@ import { AgentRecoveryStore } from './agent/recovery.js';
 import { OkxExecutionEngine } from './execution/engine.js';
 import { createLlmClient } from './llm/openai.js';
 import { OkxMarketAdapter } from './market/okx-market-adapter.js';
-import { OkxMcpConnector } from './okx/connector.js';
+import { AtkReadClient, AtkWriteClient } from './okx/lanes.js';
 
 export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'run';
 
-/** Construct exactly one official MCP connector for both production boundaries. */
+/** Two independent MCP stdio processes: read-only evidence and spot execution. */
 export function createProductionAgent(env: NodeJS.ProcessEnv = process.env): AuraAgent {
   const config = agentConfigFromEnv(env);
-  const connector = OkxMcpConnector.fromEnv(env);
+  const connector = new AtkReadClient(env);
+  const writeConnector = new AtkWriteClient(env);
   const market = new OkxMarketAdapter(connector);
-  const execution = new OkxExecutionEngine(connector, config.symbols);
+  const execution = new OkxExecutionEngine(writeConnector, config.symbols, Date.now, connector);
   const recovery = new AgentRecoveryStore(env.AURA_RECOVERY_STATE_PATH);
   return new AuraAgent(config, { connector, market, execution, llm: createLlmClient(env),
     startupContext: (snapshot, references) => recovery.context(snapshot, references),
@@ -23,8 +24,10 @@ export function createProductionAgent(env: NodeJS.ProcessEnv = process.env): Aur
 }
 
 function printReport(report: PreflightReport): void {
+  if (report.readLane) process.stdout.write(`ATK READ ${report.readLane.status} version=${report.readLane.serverVersion ?? 'unknown'} profile=${report.readLane.profile} readOnly=${report.readLane.readOnly} tools=${report.readLane.toolCount}\n`);
+  if (report.writeLane) process.stdout.write(`ATK WRITE ${report.writeLane.status} version=${report.writeLane.serverVersion ?? 'unknown'} profile=${report.writeLane.profile} scope=spot tools=${report.writeLane.tools.length}\n`);
   for (const check of report.checks) process.stdout.write(`${check.passed ? 'PASS' : 'FAIL'} ${check.name}: ${check.detail}\n`);
-  process.stdout.write(`${report.passed ? 'PASS' : 'FAIL'} PREFLIGHT state=${report.state} position=${report.positionSymbol ?? 'FLAT'}\n`);
+  process.stdout.write(`${report.passed ? 'PASS' : 'FAIL'} PREFLIGHT readiness=${report.readiness ?? 'BLOCKED'} state=${report.state} position=${report.positionSymbol ?? 'FLAT'} blockers=${report.blockers?.join(',') || 'none'}\n`);
 }
 
 export async function main(command: string | undefined = process.argv[2], env: NodeJS.ProcessEnv = process.env): Promise<number> {

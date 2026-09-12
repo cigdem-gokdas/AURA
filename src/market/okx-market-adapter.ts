@@ -1,5 +1,6 @@
 import type { OkxConnector } from '../okx/connector.js';
 import { OkxConnectorError } from '../okx/types.js';
+import { canonicalToolName, type AtkCapability } from '../okx/capabilities.js';
 import type {
   Candle,
   InstrumentMeta,
@@ -116,9 +117,13 @@ export class OkxMarketAdapter implements MarketAdapter {
   constructor(private readonly connector: OkxConnector) {}
 
   private async call<T>(
-    toolName: string,
+    capability: AtkCapability,
     args: Record<string, unknown>,
   ): Promise<T> {
+    const toolName = this.connector.getCapabilities
+      ? this.connector.getCapabilities().resolve(capability)
+      : canonicalToolName(capability);
+    if (!toolName) throw new OkxConnectorError('TOOL_NOT_AVAILABLE', `Missing ${capability} capability`);
     const tools = await this.connector.listTools();
     if (!tools.some((tool) => tool.name === toolName)) {
       throw new OkxConnectorError(
@@ -138,7 +143,7 @@ export class OkxMarketAdapter implements MarketAdapter {
 
   async getTicker(symbol: string): Promise<Ticker> {
     const row = oneRow(
-      await this.call('market_get_ticker', this.marketArgs(symbol)),
+      await this.call('MARKET_TICKER', this.marketArgs(symbol)),
     );
     matchingSymbol(row, symbol);
     const bid = numeric(row.bidPx, 'bid price', Number.EPSILON);
@@ -162,7 +167,7 @@ export class OkxMarketAdapter implements MarketAdapter {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500)
       invalid('Invalid candle limit');
     const rows = toolRows(
-      await this.call('market_get_candles', {
+      await this.call('MARKET_CANDLES', {
         ...this.marketArgs(symbol),
         bar: timeframe,
         limit,
@@ -199,7 +204,7 @@ export class OkxMarketAdapter implements MarketAdapter {
     if (!Number.isSafeInteger(depth) || depth < 1 || depth > 400)
       invalid('Invalid order book depth');
     const row = oneRow(
-      await this.call('market_get_orderbook', {
+      await this.call('MARKET_ORDERBOOK', {
         ...this.marketArgs(symbol),
         sz: depth,
       }),
@@ -218,7 +223,7 @@ export class OkxMarketAdapter implements MarketAdapter {
 
   async getInstrumentMeta(symbol: string): Promise<InstrumentMeta> {
     const row = oneRow(
-      await this.call('market_get_instruments', {
+      await this.call('MARKET_INSTRUMENT', {
         instType: 'SPOT',
         ...this.marketArgs(symbol),
       }),
@@ -257,7 +262,7 @@ export class OkxMarketAdapter implements MarketAdapter {
 
   async getSpotFeeRate(symbol: string): Promise<SpotFeeRate> {
     const row = oneRow(
-      await this.call('account_get_trade_fee', {
+      await this.call('ACCOUNT_FEE', {
         instType: 'SPOT',
         instId: text(symbol, 'symbol'),
       }),
@@ -271,7 +276,7 @@ export class OkxMarketAdapter implements MarketAdapter {
   }
 
   async getTradingBalanceSnapshot(): Promise<TradingBalanceSnapshot> {
-    const row = oneRow(await this.call('account_get_balance', {}));
+    const row = oneRow(await this.call('ACCOUNT_BALANCE', {}));
     return {
       totalEquityUsd: numeric(row.totalEq, 'total equity', 0),
       balances: array(row.details, 'balance details').map((item) => {
@@ -288,7 +293,7 @@ export class OkxMarketAdapter implements MarketAdapter {
 
   async getOpenSpotOrders(symbol: string): Promise<readonly OpenSpotOrder[]> {
     const rows = toolRows(
-      await this.call('spot_get_orders', {
+      await this.call('SPOT_QUERY_ORDERS', {
         status: 'open',
         instId: text(symbol, 'symbol'),
       }),
@@ -321,7 +326,7 @@ export class OkxMarketAdapter implements MarketAdapter {
 
   async getRecentSpotFills(symbol: string): Promise<readonly RecentSpotFill[]> {
     const rows = toolRows(
-      await this.call('spot_get_fills', {
+      await this.call('SPOT_FILLS', {
         instId: text(symbol, 'symbol'),
         archive: false,
       }),
