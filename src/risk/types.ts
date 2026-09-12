@@ -1,4 +1,5 @@
 import type { CandidateSignal } from '../signal/types.js';
+import type { LlmDecisionResult } from '../llm/types.js';
 
 export type RiskMode = 'NORMAL' | 'CAUTION' | 'DEFENSIVE' | 'LOCKDOWN';
 export type ProtectionMode = 'EXCHANGE_SIDE' | 'CLIENT_SIDE' | 'UNAVAILABLE';
@@ -39,6 +40,8 @@ export interface RiskAccountState {
   dayStartEquity: number;
   peakEquity: number;
   consecutiveLosses: number;
+  /** Timestamp of the most recent loss; required while a loss pause is active. */
+  lastLossTimestamp: number | null;
   /** Includes positions from every tracked symbol, not only the candidate market. */
   openPositions: readonly RiskOpenPosition[];
   timestamp: number;
@@ -62,6 +65,7 @@ export interface RiskDecision {
 }
 
 export interface ProtectionPlan {
+  symbol: string;
   initialStopPrice: number;
   stopDistanceFraction: number;
   stopDistanceAbsolute: number;
@@ -72,11 +76,22 @@ export interface ProtectionPlan {
 }
 
 export interface PreTradeRiskInput {
-  candidate: CandidateSignal;
+  candidate: CandidateSignal | null;
   account: RiskAccountState;
   market: RiskMarketState;
   config: RiskConfig;
   timestamp: number;
+  /** Revalidated at the risk boundary, even if the adapter already parsed it. */
+  llmResult: LlmDecisionResult | unknown;
+  clientOrderId: string;
+  knownClientOrderIds: readonly string[];
+  cycleId: string;
+  decisionId: string;
+  killSwitchActive: boolean;
+  cooldownUntil: number | null;
+  /** Optional execution request; if supplied, it must not exceed deterministic sizing. */
+  requestedNotional?: number;
+  protectionMode: ProtectionMode;
 }
 
 export interface ApprovedOrderPlan {
@@ -88,8 +103,34 @@ export interface ApprovedOrderPlan {
   protection: ProtectionPlan;
   cycleId: string;
   decisionId: string;
+  clientOrderId: string;
+}
+
+export type RiskGateName =
+  | 'CONFIG_VALID' | 'INPUT_VALID' | 'DATA_FRESH' | 'CANDIDATE_EXISTS'
+  | 'OPPORTUNITY_SCORE' | 'EDGE_COST' | 'LLM_REACHABLE' | 'LLM_SCHEMA'
+  | 'LLM_AGREE' | 'LLM_RISK' | 'SPREAD' | 'VOLATILITY' | 'COOLDOWN'
+  | 'SINGLE_POSITION_CAP' | 'CROSS_SYMBOL_POSITION_CAP' | 'TOTAL_EXPOSURE_CAP'
+  | 'DAILY_LOSS' | 'PEAK_DRAWDOWN' | 'SYMBOL_MATCH' | 'NO_AVERAGE_DOWN'
+  | 'AVAILABLE_BALANCE' | 'PROTECTION_VALID' | 'DUPLICATE_CLIENT_ORDER_ID'
+  | 'KILL_SWITCH' | 'RISK_MODE';
+
+export interface RiskGate {
+  name: RiskGateName;
+  status: 'PASS' | 'FAIL';
+  reason: string;
+}
+
+export interface RiskCertificate {
+  requestedSymbol: string;
+  existingOpenPositionSymbols: readonly string[];
+  gates: readonly RiskGate[];
+  verdict: 'ALLOW' | 'REJECT';
+  riskMode: RiskMode;
+  calculatedNotional: number | null;
+  protectionPlan: ProtectionPlan | null;
 }
 
 export type RiskGateResult =
-  | { decision: RiskDecision & { approved: true }; plan: ApprovedOrderPlan }
-  | { decision: RiskDecision & { approved: false }; plan?: never };
+  | { decision: RiskDecision & { approved: true }; plan: ApprovedOrderPlan; certificate: RiskCertificate }
+  | { decision: RiskDecision & { approved: false }; plan?: never; certificate: RiskCertificate };

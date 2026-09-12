@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import type { MarketRegime } from '../regime/types.js';
+import type { CandidateSignal } from '../signal/types.js';
+import type { DecisionMemorySummary } from '../memory/types.js';
 
 export const LlmDecisionSchema = z.strictObject({
   action: z.enum(['AGREE', 'DISAGREE', 'ABSTAIN']),
@@ -34,6 +36,32 @@ export interface CrossMarketContext {
   otherRegime: MarketRegime;
 }
 
+/** The deterministic selector has already chosen this one entry candidate. */
+export interface SelectedCandidateContext {
+  candidate: CandidateSignal;
+  crossMarket: CrossMarketContext;
+  microstructure: {
+    spreadBps: number;
+    obiTop5: number;
+    micropriceLeanBps: number;
+  };
+  /** Position size is deliberately absent from the LLM boundary. */
+  position: { hasOpenLong: boolean; openLongSymbol: string | null };
+  recentMemory: readonly DecisionMemorySummary[];
+}
+
+export interface LlmTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  estimatedCostUsd: number;
+}
+
+/** A critic only validates an existing candidate; it cannot place or size orders. */
+export interface LlmClient {
+  evaluateSelectedCandidate(context: SelectedCandidateContext): Promise<LlmDecisionResult>;
+}
+
 export type LlmDecisionStatus =
   | 'SUCCESS'
   | 'TIMEOUT'
@@ -45,7 +73,7 @@ export type LlmDecisionStatus =
   | 'BUDGET_EXCEEDED';
 
 export type LlmDecisionResult =
-  | { status: 'SUCCESS'; decision: LlmDecision; latencyMs: number }
+  | { status: 'SUCCESS'; decision: LlmDecision; latencyMs: number; usage: LlmTokenUsage }
   | {
       status: Exclude<LlmDecisionStatus, 'SUCCESS'>;
       decision?: never;
