@@ -1,13 +1,17 @@
-import type { AgentStateSnapshot } from '../loop/types.js';
-import type {
-  EquitySnapshot,
-  OpenPosition,
-  PerformanceState,
-} from '../monitor/types.js';
+import type { JudgeSnapshot } from '../agent/judge.js';
 
-export interface DashboardSnapshot {
-  agent: AgentStateSnapshot;
-  equity: EquitySnapshot | null;
-  position: OpenPosition | null;
-  performance: PerformanceState | null;
+/** Transport adds only observation history; trading state remains JudgeSnapshot. */
+export interface EquityPoint {
+  timestamp: number;
+  equity: number;
+  dailyPnl: number;
+  drawdownPct: number;
+}
+
+export interface DashboardState {
+  snapshot: JudgeSnapshot | null;
+  equityHistory: readonly EquityPoint[];
+  critic: { setupQuality: 'A' | 'B' | 'C' | 'D' | null };
+  bridgeStatus: 'READY' | 'OFFLINE';
+  receivedAt: number | null;
 }
