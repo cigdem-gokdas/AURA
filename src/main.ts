@@ -6,21 +6,35 @@ import { OkxExecutionEngine } from './execution/engine.js';
 import { createLlmClient } from './llm/openai.js';
 import { OkxMarketAdapter } from './market/okx-market-adapter.js';
 import { AtkReadClient, AtkWriteClient } from './okx/lanes.js';
+import { AuditLog, type AuditEvent } from './memory/audit.js';
+import { publishJudgeSnapshot } from './status-mcp/bridge.js';
 
 export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'run';
 
 /** Two independent MCP stdio processes: read-only evidence and spot execution. */
-export function createProductionAgent(env: NodeJS.ProcessEnv = process.env): AuraAgent {
+export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
+  observability?: { audit?: (event: AuditEvent) => void | Promise<void>;
+    statusPath?: string }): AuraAgent {
   const config = agentConfigFromEnv(env);
   const connector = new AtkReadClient(env);
   const writeConnector = new AtkWriteClient(env);
   const market = new OkxMarketAdapter(connector);
   const execution = new OkxExecutionEngine(writeConnector, config.symbols, Date.now, connector);
   const recovery = new AgentRecoveryStore(env.AURA_RECOVERY_STATE_PATH);
-  return new AuraAgent(config, { connector, market, execution, llm: createLlmClient(env),
+  let agent: AuraAgent;
+  let statusQueue = Promise.resolve();
+  agent = new AuraAgent(config, { connector, market, execution, llm: createLlmClient(env),
+    ...(observability?.audit ? { audit: observability.audit } : {}),
+    ...(observability?.statusPath ? { observer: () => {
+      const snapshot = agent.getJudgeSnapshot();
+      if (!snapshot) return;
+      statusQueue = statusQueue.then(() => publishJudgeSnapshot(observability.statusPath!, snapshot))
+        .catch(error => { process.stderr.write(`AURA status publication failed: ${error instanceof Error ? error.message : 'Unknown error'}\n`); });
+    } } : {}),
     startupContext: (snapshot, references) => recovery.context(snapshot, references),
     persistPosition: position => recovery.save(position),
     killSwitch: () => env.AURA_KILL_SWITCH === 'true' });
+  return agent;
 }
 
 function printReport(report: PreflightReport): void {
@@ -35,16 +49,39 @@ export async function main(command: string | undefined = process.argv[2], env: N
     process.stderr.write('Usage: npm run agent:{preflight|calibrate|demo-smoke|run}\n');
     return 2;
   }
-  const agent = createProductionAgent(env);
+  let audit: AuditLog | null = null;
+  let auditDegraded = false;
+  const auditFailure = (error: unknown): void => {
+    if (auditDegraded) return;
+    auditDegraded = true;
+    process.stderr.write(`AURA audit degraded: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+  };
+  try { audit = await AuditLog.open(env.AURA_AUDIT_PATH ?? '.aura/audit.jsonl'); }
+  catch (error) { auditFailure(error); }
+  const record = (event: AuditEvent): void => {
+    if (!audit || auditDegraded) return;
+    void audit.append(event).catch(auditFailure);
+  };
+  record({ eventType: 'STARTUP', payload: { command, profile: env.OKX_PROFILE,
+    symbols: env.SYMBOLS }, timestamp: Date.now() });
+  const closeAudit = async (): Promise<void> => {
+    try { await audit?.close(); } catch (error) { auditFailure(error); }
+  };
+  let agent: AuraAgent;
+  try { agent = createProductionAgent(env, { audit: record,
+    statusPath: env.AURA_STATUS_SNAPSHOT_PATH ?? '.aura/status.json' }); }
+  catch (error) { await closeAudit(); throw error; }
   if (command === 'run') {
     const report = await agent.preflight();
     printReport(report);
-    if (!report.passed || !agent.activate()) { await agent.shutdown(); return 1; }
+    if (!report.passed || !agent.activate()) { await agent.shutdown(); await closeAudit(); return 1; }
     let stopping = false;
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
-      void agent.shutdown().then(() => { process.exitCode = 0; });
+      void agent.shutdown().then(closeAudit).then(() => { process.exitCode = 0; })
+        .catch(error => { process.stderr.write(`AURA shutdown failed: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+          process.exitCode = 1; });
     };
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
@@ -66,7 +103,7 @@ export async function main(command: string | undefined = process.argv[2], env: N
     printReport(result.preflight);
     process.stdout.write(`${result.passed ? 'PASS' : 'FAIL'} DEMO_SMOKE ${result.reason}\n`);
     return result.passed ? 0 : 1;
-  } finally { await agent.shutdown(); }
+  } finally { await agent.shutdown(); await closeAudit(); }
 }
 
 if (process.argv[1] && /(?:^|\/)main\.(?:ts|js)$/.test(process.argv[1])) {

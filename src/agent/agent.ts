@@ -3,6 +3,7 @@ import type { FeatureSnapshot } from '../features/types.js';
 import type { ExecutionEngine, OrderRequest, StartupExchangeSnapshot } from '../execution/types.js';
 import type { LlmClient, LlmDecisionResult } from '../llm/types.js';
 import type { MarketAdapter, SpotFeeRate, TradingBalanceSnapshot } from '../market/types.js';
+import type { AuditEvent, AuditEventType } from '../memory/audit.js';
 import { hardStopBreached, promoteBreakEven, activateTrailing, updateAtrTrailingStop,
   takeProfitReached, timeStopReached, regimeInvalidated } from '../monitor/protection.js';
 import { InMemoryPositionMonitor } from '../monitor/monitor.js';
@@ -40,7 +41,8 @@ export interface ObserverSnapshot {
   mcpHealthy: boolean;
   symbols: readonly string[];
   markets: Readonly<Record<string, { close: number; spreadBps: number; atrPctPercentile: number;
-    regime: string; candidateAction: string; oqs: number; edgeCostRatio: number }>>;
+    regime: string; candidateAction: string; oqs: number; edgeCostRatio: number;
+    setupType?: string; obiTop5?: number; micropriceLeanBps?: number; dataAgeMs?: number }>>;
   selectedSymbol: string | null;
   selectedOQS: number | null;
   llm: { status: string; action: string | null; riskFlag: string | null } | null;
@@ -80,6 +82,7 @@ export interface AgentDependencies {
   startupContext?: (snapshot: StartupExchangeSnapshot, references: Readonly<Record<string, number>>)
     => StartupMonitorContext | Promise<StartupMonitorContext>;
   observer?: (snapshot: ObserverSnapshot) => void | Promise<void>;
+  audit?: (event: AuditEvent) => void | Promise<void>;
   persistPosition?: (position: OpenPosition | null) => Promise<void>;
   now?: () => number;
   /** Strategy seam for offline orchestration tests; production uses the existing feature/regime/signal modules. */
@@ -127,6 +130,37 @@ export class AuraAgent {
   private lastIndicatorChecks: AtkIndicatorCrossCheck[] = [];
   private lastPairContext: AtkCrossMarketContext | null = null;
   private lastPulse: AtkContextPulse | null = null;
+  private readonly auditedTraceSequence = { READ: 0, WRITE: 0 };
+
+  private audit(eventType: AuditEventType, payload: unknown,
+    identity: Partial<Pick<AuditEvent, 'cycleId' | 'decisionId' | 'clientOrderId' | 'symbol'>> = {}): void {
+    if (!this.deps.audit) return;
+    try {
+      void Promise.resolve(this.deps.audit({ eventType, timestamp: this.now(), payload, ...identity }))
+        .catch(error => process.stderr.write(`AURA audit failure: ${error instanceof Error ? error.message : 'Unknown error'}\n`));
+    } catch (error) {
+      process.stderr.write(`AURA audit failure: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+    }
+  }
+
+  private auditNewMcpTraces(cycleId?: string): void {
+    try {
+      const sources = [this.deps.connector.getRecentTraces?.() ?? [],
+        this.deps.execution.getWriteTraces?.() ?? []];
+      for (const traces of sources) traces.forEach((trace, index) => {
+        const marker = trace.sequence ?? index + 1;
+        if (marker <= this.auditedTraceSequence[trace.lane]) return;
+        this.auditedTraceSequence[trace.lane] = marker;
+        this.audit('ATK_MCP_CALL', trace, {
+          ...(cycleId || trace.cycleId ? { cycleId: cycleId ?? trace.cycleId! } : {}),
+          ...(trace.decisionId ? { decisionId: trace.decisionId } : {}),
+          ...(trace.symbol ? { symbol: trace.symbol } : {}),
+        });
+      });
+    } catch (error) {
+      process.stderr.write(`AURA audit trace failure: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
+    }
+  }
 
   private async bothLanesHealthy(): Promise<boolean> {
     const read = await this.deps.connector.healthCheck();
@@ -162,6 +196,8 @@ export class AuraAgent {
         writeLane: this.lastPreflight?.writeLane ? structuredClone(this.lastPreflight.writeLane) : null,
         uniqueToolsUsed: [...new Set(traces.map(trace => trace.toolName))].sort(),
         recentTraces: traces.map(trace => ({ ...trace })), latestProvenance: this.provenance.latest(),
+        recentDecisions: this.provenance.recent().map(item => ({ ...item, nodes: [] })),
+        recentDecisionMemory: this.monitor?.getRecentDecisionMemory() ?? [],
         indicatorCrossChecks: this.lastIndicatorChecks.map(item => ({ ...item })),
         crossMarket: this.lastPairContext ? { ...this.lastPairContext, symbols: [...this.lastPairContext.symbols] as [string, string] } : null,
         contextPulse: this.lastPulse ? { ...this.lastPulse } : null },
@@ -317,6 +353,10 @@ export class AuraAgent {
         readiness, blockers: checks.filter(item => !item.passed).map(item => item.name),
         readLane: readLaneReport, writeLane: writeLaneReport };
       this.lastPreflight = report;
+      this.audit('PREFLIGHT', { passed, readiness, checks, positionSymbol: report.positionSymbol });
+      this.audit('ATK_MCP_HEALTH', { readLane: readLaneReport, writeLane: writeLaneReport });
+      this.audit('STATE_TRANSITION', { state: this.stateValue });
+      this.auditNewMcpTraces();
       return report;
     } catch (error) {
       this.mcpHealthy = false;
@@ -345,6 +385,10 @@ export class AuraAgent {
         readiness: 'BLOCKED', blockers: checks.filter(item => !item.passed).map(item => item.name),
         readLane: readLaneReport, writeLane: writeLaneReport };
       this.lastPreflight = report;
+      this.audit('PREFLIGHT', { passed: false, checks, error: detail });
+      this.audit('ERROR', { stage: 'PREFLIGHT', reason: detail });
+      this.audit('ATK_MCP_HEALTH', { readLane: readLaneReport, writeLane: writeLaneReport });
+      this.auditNewMcpTraces();
       return report;
     }
   }
@@ -354,6 +398,7 @@ export class AuraAgent {
     if (this.stateValue !== 'LIVE_READY' || this.config.profile !== 'live'
       || !this.config.liveTradingArmed || !this.mcpHealthy || this.pending || this.stopping) return false;
     this.stateValue = 'LIVE';
+    this.audit('STATE_TRANSITION', { state: 'LIVE' });
     return true;
   }
 
@@ -424,6 +469,13 @@ export class AuraAgent {
       updated = updateAtrTrailingStop(symbol, updated, ticker.last, latest.feature.atr,
         this.config.risk.initialStopAtrMultiplier, this.now());
     }
+    if (updated.protection.currentStopPrice !== held.protection.currentStopPrice
+      || updated.protection.breakEvenActivated !== held.protection.breakEvenActivated
+      || updated.protection.trailingActivated !== held.protection.trailingActivated) {
+      this.audit('PROTECTION', { reason: 'STOP_UPDATED', stopPrice: updated.protection.currentStopPrice,
+        breakEvenActivated: updated.protection.breakEvenActivated,
+        trailingActivated: updated.protection.trailingActivated, mode: updated.protectionMode }, { symbol });
+    }
     this.protectionOverrides.set(symbol, updated);
     const equity = await monitor.getEquitySnapshot();
     const immediateReason = (this.deps.killSwitch?.() ?? false) ? 'KILL_SWITCH'
@@ -432,7 +484,12 @@ export class AuraAgent {
           : takeProfitReached(symbol, updated, ticker.last) ? 'TAKE_PROFIT'
             : timeStopReached(symbol, updated, this.now(), this.config.maxHoldingMs) ? 'TIME_STOP' : null;
     if (immediateReason) {
+      this.audit('PROTECTION', { reason: immediateReason, stopPrice: updated.protection.currentStopPrice,
+        markPrice: ticker.last, mode: updated.protectionMode }, { symbol });
+      const exitRequested = !this.pending && this.stateValue === 'LIVE' && this.mcpHealthy;
       await this.submitProtectiveExit(updated, ticker.last);
+      if (exitRequested) this.audit('EXIT', { phase: 'REQUESTED', reason: immediateReason,
+        requestedQuantity: updated.quantity, referencePrice: ticker.last }, { symbol });
       await this.deps.persistPosition?.(this.currentPosition(await monitor.getOpenPosition()));
       return immediateReason;
     }
@@ -442,6 +499,8 @@ export class AuraAgent {
     const volatilityExit = evaluation?.regime.stableRegime === 'HIGH_VOLATILITY';
     const reason = volatilityExit ? 'HIGH_VOLATILITY' : invalidRegime ? 'REGIME_INVALIDATION' : null;
     if (reason) await this.submitProtectiveExit(updated, ticker.last);
+    if (reason) this.audit('PROTECTION', { reason, markPrice: ticker.last,
+      stopPrice: updated.protection.currentStopPrice, mode: updated.protectionMode }, { symbol });
     await this.deps.persistPosition?.(this.currentPosition(await monitor.getOpenPosition()));
     return reason ?? 'Protected';
   }
@@ -449,14 +508,25 @@ export class AuraAgent {
   private nextId(): string { this.sequence += 1; return `aura${this.now()}_${this.sequence}`.slice(0, 32); }
 
   private async submit(plan: ApprovedOrderPlan): Promise<string> {
+    const identity = { cycleId: plan.cycleId, decisionId: plan.decisionId,
+      clientOrderId: plan.clientOrderId, symbol: plan.symbol };
+    this.audit('EXECUTION_SUBMITTED', { side: plan.side, quantity: plan.quantity,
+      referencePrice: plan.referencePrice, protectionMode: plan.protection.protectionMode }, identity);
     const result = await this.deps.execution.submitApprovedOrder(plan);
+    this.audit('EXECUTION_RESULT', { status: result.status, orderId: result.exchangeOrderId,
+      reason: result.reason, protectionMode: result.protectionMode,
+      protectionVerified: result.protectionVerified }, identity);
     this.clientIds.add(plan.clientOrderId);
     if (result.status === 'RECONCILE_REQUIRED' || result.status === 'ACCEPTED') {
       this.pending = { request: { symbol: plan.symbol, clientOrderId: plan.clientOrderId,
         exchangeOrderId: result.exchangeOrderId, cycleId: plan.cycleId, decisionId: plan.decisionId,
         side: plan.side, kind: 'MARKET', quantity: plan.quantity, limitPrice: null },
         plan, exchangeOrderId: result.exchangeOrderId };
-      if (result.status === 'RECONCILE_REQUIRED') this.degrade('Ambiguous order; reconciliation required');
+      if (result.status === 'RECONCILE_REQUIRED') {
+        this.audit('RECONCILIATION_REQUIRED', { orderId: result.exchangeOrderId,
+          reason: result.reason }, identity);
+        this.degrade('Ambiguous order; reconciliation required');
+      }
       await this.reconcilePending();
     } else if (result.status === 'CONNECTOR_FAILURE') this.degrade('Execution connector failure');
     return result.status;
@@ -471,6 +541,10 @@ export class AuraAgent {
       && (result.order.state === 'CANCELLED' || result.order.state === 'REJECTED')
       && result.order.filledQuantity === 0) {
       this.pending = null;
+      this.audit('RECONCILIATION_RESOLVED', { outcome: result.order.state,
+        orderId: result.order.exchangeOrderId }, { cycleId: pending.plan.cycleId,
+        decisionId: pending.plan.decisionId, clientOrderId: pending.plan.clientOrderId,
+        symbol: pending.plan.symbol });
       this.degradedReason = 'Order cancellation/rejection verified; full preflight required';
       return;
     }
@@ -504,14 +578,27 @@ export class AuraAgent {
         this.degrade(`Monitor fill rejected: ${applied.status}`); return;
       }
       total += fill.quantity;
+      if (applied.status === 'APPLIED') this.audit('FILL', { orderId: fill.orderId,
+        fillId: fill.fillId, side: fill.side, quantity: fill.quantity, price: fill.price,
+        fee, closedTradePnl: applied.closedTradePnl }, { cycleId: pending.plan.cycleId,
+        decisionId: pending.plan.decisionId, clientOrderId: pending.plan.clientOrderId,
+        symbol: fill.symbol });
       if (applied.closedTradeOutcomeR !== null) this.monitor.recordDecision({ symbol: pending.plan.symbol,
         setupType: 'DETERMINISTIC_EXIT', regime: this.evaluations.get(pending.plan.symbol)?.regime.stableRegime ?? 'UNCERTAIN',
         resultCategory: 'CLOSED', outcomeR: applied.closedTradeOutcomeR,
         stopHit: false, timestamp: fill.timestamp });
+      if (applied.closedTradePnl !== null) this.audit('EXIT', { phase: 'CLOSED',
+        orderId: fill.orderId, price: fill.price, quantity: fill.quantity,
+        pnl: applied.closedTradePnl, outcomeR: applied.closedTradeOutcomeR },
+      { cycleId: pending.plan.cycleId, decisionId: pending.plan.decisionId,
+        clientOrderId: pending.plan.clientOrderId, symbol: fill.symbol });
     }
     if (total + 1e-12 < pending.plan.quantity) return;
     await this.deps.persistPosition?.(await this.monitor.getOpenPosition());
     this.pending = null;
+    this.audit('RECONCILIATION_RESOLVED', { outcome: 'FILLED', orderId: exchangeOrderId,
+      quantity: total }, { cycleId: pending.plan.cycleId, decisionId: pending.plan.decisionId,
+      clientOrderId: pending.plan.clientOrderId, symbol: pending.plan.symbol });
     if (this.stateValue === 'DEGRADED') this.degradedReason = 'Order resolved; full preflight required';
   }
 
@@ -519,6 +606,8 @@ export class AuraAgent {
     if (this.stateValue !== 'HALTED') this.stateValue = 'DEGRADED';
     this.degradedReason = reason;
     this.mcpHealthy = false;
+    this.audit('DEGRADED', { reason, state: this.stateValue });
+    this.audit('STATE_TRANSITION', { state: this.stateValue, reason });
   }
 
   private async withLock<T>(fn: () => Promise<T>, skipped: T): Promise<T> {
@@ -565,11 +654,28 @@ export class AuraAgent {
           const evaluation = await this.evaluate(symbol, null);
           this.retain(evaluation);
           evaluations.push(evaluation);
+          this.audit('MARKET_ACCEPTED', { price: evaluation.feature.close,
+            spreadBps: evaluation.feature.spreadBps, dataAgeMs: evaluation.feature.dataAgeMs },
+          { cycleId: provenanceCycleId, symbol });
+          this.audit('FEATURES_COMPUTED', { emaFast: evaluation.feature.emaFast,
+            emaSlow: evaluation.feature.emaSlow, atr: evaluation.feature.atr,
+            adx: evaluation.feature.adx, obiTop5: evaluation.feature.obiTop5,
+            micropriceLeanBps: evaluation.feature.micropriceLeanBps },
+          { cycleId: provenanceCycleId, symbol });
+          this.audit('REGIME_DECISION', { regime: evaluation.regime.stableRegime,
+            rawProposal: evaluation.regime.rawProposedRegime }, { cycleId: provenanceCycleId, symbol });
+          this.audit('CANDIDATE', { action: evaluation.candidate.action,
+            setupType: evaluation.candidate.setupType, oqs: evaluation.candidate.opportunityScore,
+            edgeCostRatio: evaluation.candidate.edgeToCostRatio }, { cycleId: provenanceCycleId, symbol });
           this.node('LOCAL', 'Features, regime and opportunity score', symbol,
             `${evaluation.regime.stableRegime}; OQS ${evaluation.candidate.opportunityScore}`);
         }
         const ranked = rankEntryCandidates(evaluations.map(item => item.candidate));
         const selected = ranked[0] ?? null;
+        this.audit('OPPORTUNITY_SELECTED', { selectedSymbol: selected?.symbol ?? null,
+          oqs: selected?.opportunityScore ?? null,
+          rankedSymbols: ranked.map(item => item.symbol) }, { cycleId: provenanceCycleId,
+          ...(selected ? { symbol: selected.symbol } : {}) });
         this.node('LOCAL', 'Deterministic cross-symbol ranking', selected?.symbol ?? null,
           selected ? `Selected ${selected.symbol}` : 'No eligible entry');
         if (!selected) return finish({ status: 'HOLD', selectedSymbol: null, reason: 'No eligible entry' });
@@ -600,6 +706,12 @@ export class AuraAgent {
           indicatorCrossChecks: this.lastIndicatorChecks,
           atkCrossMarket: this.lastPairContext,
           contextPulse: this.lastPulse });
+        this.audit('MARKET_CRITIC_RESULT', this.latestLlm.status === 'SUCCESS'
+          ? { status: this.latestLlm.status, verdict: this.latestLlm.decision.action,
+            counter_thesis: this.latestLlm.decision.counter_thesis,
+            riskFlag: this.latestLlm.decision.risk_flag,
+            setupQuality: this.latestLlm.decision.setup_quality }
+          : { status: this.latestLlm.status }, { cycleId: provenanceCycleId, symbol: selected.symbol });
         this.node('LLM', 'Market Critic reviewed selected candidate', selected.symbol,
           this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.action : this.latestLlm.status,
           this.latestLlm.status === 'SUCCESS');
@@ -644,6 +756,8 @@ export class AuraAgent {
           const quantity = Number(rounded.toPrecision(15));
           if (!Number.isFinite(quantity) || quantity < meta.minOrderSize || quantity > risk.plan.quantity + 1e-10) {
             this.latestCertificate = risk.certificate;
+            this.audit('RISK_CERTIFICATE', risk.certificate, { cycleId: provenanceCycleId,
+              decisionId: id, clientOrderId: id, symbol: selected.symbol });
             this.monitor?.recordDecision({ symbol: selected.symbol, setupType: selected.setupType,
               regime: selected.regime, resultCategory: 'REJECTED_RISK', outcomeR: null, stopHit: null,
               timestamp: this.now() });
@@ -652,6 +766,10 @@ export class AuraAgent {
           risk = evaluateEntryRisk({ ...riskInput, requestedNotional: quantity * risk.plan.referencePrice });
         }
         this.latestCertificate = risk.certificate;
+        this.audit('RISK_CERTIFICATE', risk.certificate, { cycleId: provenanceCycleId,
+          decisionId: id, clientOrderId: id, symbol: selected.symbol });
+        if (risk.certificate.riskMode === 'LOCKDOWN') this.audit('LOCKDOWN',
+          { reason: risk.decision.reason }, { cycleId: provenanceCycleId, symbol: selected.symbol });
         this.node('RISK', 'Deterministic Risk Certificate', selected.symbol,
           risk.certificate.verdict, risk.certificate.verdict === 'ALLOW');
         if (exchangeAtRisk.profile !== this.config.profile || exchangeAtRisk.openOrders.length > 0
@@ -674,6 +792,8 @@ export class AuraAgent {
           selectedSymbol: selected.symbol, reason: submission });
       } catch (error) {
         this.degrade(error instanceof Error ? error.message : 'Cycle failure');
+        this.audit('ERROR', { stage: 'SLOW_CYCLE', reason: this.degradedReason },
+          { cycleId: provenanceCycleId, ...(this.selected ? { symbol: this.selected.symbol } : {}) });
         this.node('LOCAL', 'Cycle failed closed', this.selected?.symbol ?? null, 'BLOCKED', false);
         return finish({ status: 'BLOCKED', selectedSymbol: this.selected?.symbol ?? null, reason: this.degradedReason ?? 'Cycle failure' });
       } finally {
@@ -682,10 +802,25 @@ export class AuraAgent {
             ? all.filter(trace => (trace.sequence ?? 0) > marker) : all.slice(marker);
         const traces = [...newTraces(this.deps.connector.getRecentTraces?.() ?? [], readTraceStart),
           ...newTraces(this.deps.execution.getWriteTraces?.() ?? [], writeTraceStart)];
+        this.auditNewMcpTraces(provenanceCycleId);
         this.provenance.record({ cycleId: provenanceCycleId, timestamp: this.now(),
           selectedSymbol: this.selected?.symbol ?? null,
           result: result.status,
+          summary: { symbol: this.selected?.symbol ?? null, setupType: this.selected?.setupType ?? null,
+            oqs: this.selected?.opportunityScore ?? null, selection: this.selected ? 'SELECTED' : 'NOT_SELECTED',
+            criticVerdict: this.latestLlm?.status === 'SUCCESS' ? this.latestLlm.decision.action : this.latestLlm?.status ?? null,
+            counterThesis: this.latestLlm?.status === 'SUCCESS' ? this.latestLlm.decision.counter_thesis : null,
+            riskResult: this.latestCertificate?.verdict ?? null,
+            primaryRejectionReason: result.status === 'REJECTED' ? result.reason
+              : this.latestCertificate?.gates.find(gate => gate.status === 'FAIL')?.reason ?? null,
+            executionResult: result.status === 'SUBMITTED' ||
+              (result.status === 'BLOCKED' && ['RECONCILE_REQUIRED', 'CONNECTOR_FAILURE', 'REJECTED',
+                'DUPLICATE', 'INVALID_PLAN'].includes(result.reason)) ? result.reason : null,
+            outcomeR: null, pnl: null },
           nodes: [...traces.map(traceNode), ...this.cycleNodes].sort((a, b) => a.timestamp - b.timestamp) });
+        this.audit('DECISION_PROVENANCE', this.provenance.latest(),
+          { cycleId: provenanceCycleId,
+            ...(this.selected ? { symbol: this.selected.symbol } : {}) });
         await this.publish();
       }
     }, { status: 'SKIPPED', selectedSymbol: null, reason: 'Cycle already running or stopping' });
@@ -703,7 +838,12 @@ export class AuraAgent {
           await this.recover(); return;
         }
         await this.monitorHeld(false);
-      } catch (error) { this.degrade(error instanceof Error ? error.message : 'Fast safety failure'); }
+      } catch (error) {
+        this.degrade(error instanceof Error ? error.message : 'Fast safety failure');
+        this.audit('ERROR', { stage: 'FAST_CYCLE', reason: this.degradedReason });
+      } finally {
+        this.auditNewMcpTraces();
+      }
     }, undefined);
   }
 
@@ -737,7 +877,9 @@ export class AuraAgent {
       spreads[symbol] = [item.feature.spreadBps];
       atrPercentiles[symbol] = [item.feature.atrPctPercentile];
     }
-    return { diagnostics: summarizeSignalCalibration(candidates), spreads, atrPercentiles };
+    const result = { diagnostics: summarizeSignalCalibration(candidates), spreads, atrPercentiles };
+    this.audit('CALIBRATION', result);
+    return result;
   }
 
   /** Explicit command only; it deliberately refuses to improvise a demo order or cleanup. */
@@ -766,6 +908,7 @@ export class AuraAgent {
     this.slowTimer = null; this.fastTimer = null;
     await this.active?.catch(() => undefined);
     this.stateValue = 'HALTED';
+    this.audit('STATE_TRANSITION', { state: 'HALTED' });
     await this.publish();
     await this.deps.execution.stop?.();
     await this.deps.connector.disconnect();
@@ -781,7 +924,9 @@ export class AuraAgent {
         close: item.feature.close, spreadBps: item.feature.spreadBps,
         atrPctPercentile: item.feature.atrPctPercentile, regime: item.regime.stableRegime,
         candidateAction: item.candidate.action, oqs: item.candidate.opportunityScore,
-        edgeCostRatio: item.candidate.edgeToCostRatio,
+        edgeCostRatio: item.candidate.edgeToCostRatio, setupType: item.candidate.setupType,
+        obiTop5: item.feature.obiTop5, micropriceLeanBps: item.feature.micropriceLeanBps,
+        dataAgeMs: item.feature.dataAgeMs,
       }]));
       const snapshot: ObserverSnapshot = { timestamp: this.now(), state: this.stateValue, mcpHealthy: this.mcpHealthy,
         symbols: [...this.config.symbols], markets, selectedSymbol: this.selected?.symbol ?? null,
@@ -800,7 +945,8 @@ export class AuraAgent {
           maximumDrawdownPct: equity.maximumDrawdown * 100 } : null,
         riskMode: this.latestCertificate?.riskMode ?? null, degradedReason: this.degradedReason };
       this.lastSnapshot = structuredClone(snapshot);
-      await this.deps.observer?.(structuredClone(snapshot));
+      const observing = this.deps.observer?.(structuredClone(snapshot));
+      if (observing) void Promise.resolve(observing).catch(() => undefined);
     } catch { /* The observer is never a decision authority. */ }
   }
 }

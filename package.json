@@ -14,10 +14,12 @@
     "agent:preflight": "tsx src/main.ts preflight",
     "agent:calibrate": "tsx src/main.ts calibrate",
     "agent:demo-smoke": "tsx src/main.ts demo-smoke",
-    "agent:run": "tsx src/main.ts run"
+    "agent:run": "tsx src/main.ts run",
+    "status:mcp": "node --import tsx src/status-mcp/server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
     "dotenv": "^17.2.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

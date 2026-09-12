@@ -2,6 +2,7 @@ import type { AtkContextPulse, AtkCrossMarketContext, AtkIndicatorCrossCheck } f
 import type { ObserverSnapshot, PreflightReport } from './agent.js';
 import type { DecisionProvenance } from './provenance.js';
 import type { AtkToolTrace } from '../okx/telemetry.js';
+import type { DecisionMemorySummary } from '../memory/types.js';
 
 export interface JudgeSnapshot {
   timestamp: number;
@@ -19,6 +20,8 @@ export interface JudgeSnapshot {
     uniqueToolsUsed: readonly string[];
     recentTraces: readonly AtkToolTrace[];
     latestProvenance: DecisionProvenance | null;
+    recentDecisions: readonly DecisionProvenance[];
+    recentDecisionMemory?: readonly DecisionMemorySummary[];
     indicatorCrossChecks: readonly AtkIndicatorCrossCheck[];
     crossMarket: AtkCrossMarketContext | null;
     contextPulse: AtkContextPulse | null;

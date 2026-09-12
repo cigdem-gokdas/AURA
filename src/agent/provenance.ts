@@ -18,6 +18,19 @@ export interface DecisionProvenance {
   selectedSymbol: string | null;
   result: string;
   nodes: readonly DecisionProvenanceNode[];
+  summary?: {
+    symbol: string | null;
+    setupType: string | null;
+    oqs: number | null;
+    selection: 'SELECTED' | 'NOT_SELECTED';
+    criticVerdict: string | null;
+    counterThesis: string | null;
+    riskResult: string | null;
+    primaryRejectionReason: string | null;
+    executionResult: string | null;
+    outcomeR: number | null;
+    pnl: number | null;
+  };
 }
 
 export function traceNode(trace: AtkToolTrace): DecisionProvenanceNode {
@@ -33,14 +46,17 @@ export class DecisionProvenanceBuffer {
     if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('Invalid provenance limit');
   }
   record(path: DecisionProvenance): void {
-    this.history.push({ ...path, nodes: path.nodes.map(node => ({ ...node })) });
+    this.history.push({ ...path, nodes: path.nodes.map(node => ({ ...node })),
+      ...(path.summary ? { summary: { ...path.summary } } : {}) });
     if (this.history.length > this.limit) this.history.splice(0, this.history.length - this.limit);
   }
   latest(): DecisionProvenance | null {
     const item = this.history.at(-1);
-    return item ? { ...item, nodes: item.nodes.map(node => ({ ...node })) } : null;
+    return item ? { ...item, nodes: item.nodes.map(node => ({ ...node })),
+      ...(item.summary ? { summary: { ...item.summary } } : {}) } : null;
   }
   recent(): readonly DecisionProvenance[] {
-    return this.history.map(item => ({ ...item, nodes: item.nodes.map(node => ({ ...node })) }));
+    return this.history.map(item => ({ ...item, nodes: item.nodes.map(node => ({ ...node })),
+      ...(item.summary ? { summary: { ...item.summary } } : {}) }));
   }
 }

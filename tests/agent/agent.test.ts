@@ -10,6 +10,11 @@ import type { ProtectionPlan } from '../../src/risk/types.js';
 import type { CandidateSignal } from '../../src/signal/types.js';
 import type { AtkToolTrace } from '../../src/okx/telemetry.js';
 import { createProductionAgent } from '../../src/main.js';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { AuditLog, type AuditEvent } from '../../src/memory/audit.js';
+import { publishJudgeSnapshot, readJudgeSnapshot } from '../../src/status-mcp/bridge.js';
 
 const NOW = 1_000_000;
 const symbols = ['BTC-USDT', 'ETH-USDT'];
@@ -53,6 +58,7 @@ function protection(symbol: string): ProtectionPlan {
 
 function harness(options: { scores?: Record<string, number>; edges?: Record<string, number>;
   held?: string; profile?: 'demo' | 'live'; armed?: boolean; observer?: (s: ObserverSnapshot) => void;
+  audit?: (event: AuditEvent) => void | Promise<void>;
   llmFailure?: boolean; ambiguous?: boolean; evaluationDelay?: Promise<void>; tickerPrice?: number;
   missingTool?: string } = {}) {
   const profile = options.profile ?? 'live';
@@ -126,6 +132,7 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
       { referencePrices: references, openedAtBySymbol: {}, protectionPlans: {}, protectionModes: {} },
   };
   if (options.observer) deps.observer = options.observer;
+  if (options.audit) deps.audit = options.audit;
   const agent = new AuraAgent(agentConfigFromEnv(env(profile, String(options.armed ?? true))), deps);
   return { agent, connector, market, execution, llm, evaluated, snapshot,
     setWriteConnected: (value: boolean) => { writeConnected = value; } };
@@ -214,6 +221,23 @@ describe('AURA orchestration', () => {
     await h.agent.runFastCycle();
     expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
     await h.agent.shutdown();
+  });
+
+  it('preserves a held-position protective exit when audit and status observers fail', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const h = harness({ held: 'ETH-USDT', llmFailure: true, tickerPrice: 80,
+        audit: () => { throw new Error('audit disk unavailable'); },
+        observer: () => { throw new Error('status bridge unavailable'); } });
+      expect((await h.agent.preflight()).passed).toBe(true);
+      h.agent.activate();
+      expect((await h.agent.runSlowCycle()).status).toBe('MONITORING');
+      expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0]).toMatchObject({
+        symbol: 'ETH-USDT', side: 'SELL' });
+      expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
+      await h.agent.shutdown();
+    } finally { stderr.mockRestore(); }
   });
 
   it('does not become live in demo or when unarmed', async () => {
@@ -353,6 +377,41 @@ describe('AURA orchestration', () => {
     expect(Object.isFrozen(judge?.functional.markets)).toBe(true);
     expect(h.agent.getJudgeSnapshot()?.reasoning.perSymbolOqs['BTC-USDT']).toBe(80);
     await h.agent.shutdown();
+  });
+
+  it('projects the existing JudgeSnapshot and audit events from one evaluated cycle', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'aura-observe-'));
+    const audit = await AuditLog.open(join(directory, 'audit.jsonl'));
+    const statusPath = join(directory, 'status.json');
+    let published: Promise<void> | null = null;
+    let h!: ReturnType<typeof harness>;
+    try {
+      h = harness({ audit: event => audit.append(event).then(() => undefined),
+        observer: () => {
+          const snapshot = h.agent.getJudgeSnapshot();
+          if (snapshot) published = publishJudgeSnapshot(statusPath, snapshot);
+          return published ?? undefined;
+        } });
+      await h.agent.preflight(); h.agent.activate();
+      expect((await h.agent.runSlowCycle()).status).toBe('SUBMITTED');
+      if (published) await published;
+      await audit.flush();
+      const records = (await readFile(join(directory, 'audit.jsonl'), 'utf8')).trimEnd()
+        .split('\n').map(line => JSON.parse(line));
+      expect(records.map(record => record.eventType)).toContain('DECISION_PROVENANCE');
+      expect(records.map(record => record.eventType)).toContain('MARKET_CRITIC_RESULT');
+      expect(records.map(record => record.eventType)).toContain('RISK_CERTIFICATE');
+      expect(records.map(record => record.eventType)).toContain('EXECUTION_RESULT');
+      const status = await readJudgeSnapshot(statusPath);
+      expect(status?.reasoning.selectedSymbol).toBe('BTC-USDT');
+      expect(status?.atk.recentDecisions.at(-1)?.summary?.criticVerdict).toBe('AGREE');
+      expect(status?.reasoning.riskCertificate?.verdict).toBe('ALLOW');
+    } finally {
+      if (h) await h.agent.shutdown();
+      if (published) await published;
+      await audit.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('skips overlapping slow cycles and shuts down without scheduling new work', async () => {
