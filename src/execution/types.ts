@@ -64,6 +64,7 @@ export interface ExchangePositionSnapshot {
 export interface StartupExchangeSnapshot {
   profile: MarketProfile;
   totalEquityUsd: number;
+  /** Raw non-zero spot holdings until startup ownership reconciliation classifies them. */
   positions: readonly ExchangePositionSnapshot[];
   openOrders: readonly OrderStatus[];
   balances: readonly { currency: string; equity: number; available: number }[];

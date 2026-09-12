@@ -10,6 +10,8 @@ import type { ProtectionPlan } from '../../src/risk/types.js';
 import type { CandidateSignal } from '../../src/signal/types.js';
 import type { AtkToolTrace } from '../../src/okx/telemetry.js';
 import { createProductionAgent } from '../../src/main.js';
+import { AgentRecoveryStore } from '../../src/agent/recovery.js';
+import { InMemoryPositionMonitor } from '../../src/monitor/monitor.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,6 +138,29 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
   const agent = new AuraAgent(agentConfigFromEnv(env(profile, String(options.armed ?? true))), deps);
   return { agent, connector, market, execution, llm, evaluated, snapshot,
     setWriteConnected: (value: boolean) => { writeConnected = value; } };
+}
+
+async function withRecoveryAgent(run: (agent: AuraAgent, h: ReturnType<typeof harness>,
+  store: AgentRecoveryStore) => Promise<void>, score = 80): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), 'aura-ownership-'));
+  const h = harness();
+  const store = new AgentRecoveryStore(join(directory, 'checkpoint.json'));
+  const agent = new AuraAgent(agentConfigFromEnv(env()), {
+    connector: h.connector, market: h.market, execution: h.execution, llm: h.llm,
+    now: () => NOW, evaluateSymbol: async symbol => evaluation(symbol, score),
+    startupContext: (snapshot, references) => store.context(snapshot, references),
+  });
+  try { await run(agent, h, store); }
+  finally { await agent.shutdown(); await rm(directory, { recursive: true, force: true }); }
+}
+
+async function saveOwnedPosition(store: AgentRecoveryStore, symbol: string): Promise<void> {
+  const monitor = new InMemoryPositionMonitor(10_000, 0);
+  const plan = protection(symbol);
+  expect(monitor.processFill({ symbol, clientOrderId: 'aura100_1', exchangeOrderId: 'order-1',
+    fillId: 'fill-1', side: 'BUY', quantity: 1, price: 100, fee: 0, timestamp: NOW - 100 },
+  { allowSameSymbolIncrease: false, protectionPlan: plan, protectionMode: 'CLIENT_SIDE' }).status).toBe('APPLIED');
+  await store.save((await monitor.getOpenPosition())!);
 }
 
 describe('AURA orchestration', () => {
@@ -452,6 +477,94 @@ describe('AURA orchestration', () => {
     expect(report.passed).toBe(false);
     expect(agent.activate()).toBe(false);
     await agent.shutdown();
+  });
+
+  it('passes preflight with seeded BTC and ETH inventory and exposes both in JudgeSnapshot', async () => {
+    await withRecoveryAgent(async (agent, h) => {
+      h.snapshot.positions = [
+        { symbol: 'BTC-USDT', quantity: 2, averageEntryPrice: 100, updatedAt: NOW },
+        { symbol: 'ETH-USDT', quantity: 3, averageEntryPrice: 100, updatedAt: NOW },
+      ];
+      const report = await agent.preflight();
+      expect(report.passed).toBe(true);
+      expect(report.positionSymbol).toBeNull();
+      expect(report.checks.find(check => check.name === 'POSITION_OWNERSHIP')?.passed).toBe(true);
+      expect(report.unmanagedInventory?.map(item => item.symbol)).toEqual(symbols);
+      expect((await agent.positionMonitor?.getOpenPosition()) ?? null).toBeNull();
+      expect(agent.getJudgeSnapshot()?.functional.unmanagedInventory?.map(item => item.symbol)).toEqual(symbols);
+      expect(agent.activate()).toBe(true);
+      expect((await agent.runSlowCycle()).status).toBe('HOLD');
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    }, 0);
+  });
+
+  it('restores AURA-owned ETH while keeping BTC inventory outside the active position', async () => {
+    await withRecoveryAgent(async (agent, h, store) => {
+      await saveOwnedPosition(store, 'ETH-USDT');
+      h.snapshot.positions = [
+        { symbol: 'BTC-USDT', quantity: 2, averageEntryPrice: 100, updatedAt: NOW },
+        { symbol: 'ETH-USDT', quantity: 1, averageEntryPrice: 100, updatedAt: NOW },
+      ];
+      const report = await agent.preflight();
+      expect(report.passed).toBe(true);
+      expect(report.positionSymbol).toBe('ETH-USDT');
+      expect(report.unmanagedInventory).toMatchObject([{ symbol: 'BTC-USDT', quantity: 2 }]);
+      expect(agent.activate()).toBe(true);
+      expect((await agent.runSlowCycle()).status).toBe('MONITORING');
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    });
+  });
+
+  it('blocks preflight for two AURA-owned symbol claims', async () => {
+    await withRecoveryAgent(async (agent, h, store) => {
+      await saveOwnedPosition(store, 'ETH-USDT');
+      h.snapshot.positions = [
+        { symbol: 'BTC-USDT', quantity: 1, averageEntryPrice: 100, updatedAt: NOW },
+        { symbol: 'ETH-USDT', quantity: 1, averageEntryPrice: 100, updatedAt: NOW },
+      ];
+      h.snapshot.recentFills = [{ symbol: 'BTC-USDT', orderId: 'btc-order',
+        clientOrderId: 'aura900000_2', quantity: 1, price: 100, timestamp: NOW - 50 }];
+      const report = await agent.preflight();
+      expect(report.passed).toBe(false);
+      expect(report.readiness).toBe('BLOCKED');
+      expect(report.checks.find(check => check.name === 'EXCHANGE_PREFLIGHT')?.detail)
+        .toContain('Multiple AURA ownership claims');
+      expect(agent.activate()).toBe(false);
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    });
+  });
+
+  it('blocks ambiguous ownership without a checkpoint and requests reconciliation', async () => {
+    await withRecoveryAgent(async (agent, h) => {
+      h.snapshot.positions = [{ symbol: 'BTC-USDT', quantity: 1, averageEntryPrice: 100, updatedAt: NOW }];
+      h.snapshot.recentFills = [{ symbol: 'BTC-USDT', orderId: 'btc-order',
+        clientOrderId: 'aura900000_2', quantity: 1, price: 100, timestamp: NOW - 50 }];
+      const report = await agent.preflight();
+      expect(report.passed).toBe(false);
+      expect(report.readiness).toBe('BLOCKED');
+      expect(report.checks.find(check => check.name === 'EXCHANGE_PREFLIGHT')?.detail)
+        .toContain('reconciliation required');
+      expect(agent.getJudgeSnapshot()?.safety.reconciliationPending).toBe(true);
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    });
+  });
+
+  it('passes WRITE_CAPABILITIES when spot placement is present alongside a system tool', async () => {
+    const h = harness();
+    h.execution.getWriteToolNames = () => ['spot_place_order', 'system_get_capabilities'];
+    h.execution.getCapabilities = () => ({ placeOrder: 'spot_place_order', getOrder: 'spot_get_order',
+      getOrders: 'spot_get_orders', getFills: 'spot_get_fills', getAlgoOrders: null,
+      placeAlgoOrder: null, conditionalProtectionSupported: false, ocoProtectionSupported: false,
+      getBalance: 'account_get_balance', getTradeFee: 'account_get_trade_fee',
+      clientOrderIdSupported: true, attachedProtectionSupported: false });
+    const report = await h.agent.preflight();
+    expect(report.checks.find(check => check.name === 'WRITE_CAPABILITIES')).toMatchObject({
+      passed: true, detail: 'Spot order placement discovered',
+    });
+    expect(report.checks.find(check => check.name === 'EXECUTION_CAPABILITY')?.passed).toBe(true);
+    expect(report.passed).toBe(true);
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
   });
 
   it('reports a local BTC versus exchange ETH discrepancy before live activation', async () => {

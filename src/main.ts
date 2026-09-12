@@ -41,6 +41,8 @@ function printReport(report: PreflightReport): void {
   if (report.readLane) process.stdout.write(`ATK READ ${report.readLane.status} version=${report.readLane.serverVersion ?? 'unknown'} profile=${report.readLane.profile} readOnly=${report.readLane.readOnly} tools=${report.readLane.toolCount}\n`);
   if (report.writeLane) process.stdout.write(`ATK WRITE ${report.writeLane.status} version=${report.writeLane.serverVersion ?? 'unknown'} profile=${report.writeLane.profile} scope=spot tools=${report.writeLane.tools.length}\n`);
   for (const check of report.checks) process.stdout.write(`${check.passed ? 'PASS' : 'FAIL'} ${check.name}: ${check.detail}\n`);
+  for (const holding of report.unmanagedInventory ?? []) process.stdout.write(
+    `UNMANAGED_INVENTORY ${holding.symbol} quantity=${holding.quantity}\n`);
   process.stdout.write(`${report.passed ? 'PASS' : 'FAIL'} PREFLIGHT readiness=${report.readiness ?? 'BLOCKED'} state=${report.state} position=${report.positionSymbol ?? 'FLAT'} blockers=${report.blockers?.join(',') || 'none'}\n`);
 }
 

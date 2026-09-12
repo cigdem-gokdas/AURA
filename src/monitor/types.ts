@@ -1,7 +1,7 @@
 import type { ProtectionMode, ProtectionPlan } from '../risk/types.js';
 import type { OrderSide } from '../execution/types.js';
 import type { DecisionMemorySummary } from '../memory/types.js';
-import type { StartupExchangeSnapshot } from '../execution/types.js';
+import type { ExchangePositionSnapshot, StartupExchangeSnapshot } from '../execution/types.js';
 
 export interface PositionProtectionState {
   mode: ProtectionMode;
@@ -101,6 +101,10 @@ export interface StartupMonitorContext {
   openedAtBySymbol: Readonly<Record<string, number>>;
   protectionPlans: Readonly<Record<string, ProtectionPlan>>;
   protectionModes: Readonly<Record<string, ProtectionMode>>;
+  /** When supplied, only these checkpoint-backed holdings are active AURA trades. */
+  managedPositions?: readonly ExchangePositionSnapshot[];
+  /** Spot balances not attributed to an AURA trade; never enter position risk gates. */
+  unmanagedInventory?: readonly ExchangePositionSnapshot[];
 }
 
 export interface StartupMonitorResult {

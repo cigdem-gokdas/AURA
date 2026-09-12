@@ -1,6 +1,6 @@
 import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { StartupExchangeSnapshot } from '../execution/types.js';
+import type { ExchangePositionSnapshot, StartupExchangeSnapshot } from '../execution/types.js';
 import type { OpenPosition, StartupMonitorContext } from '../monitor/types.js';
 
 interface RecoveryCheckpoint {
@@ -19,6 +19,12 @@ const empty = (): StartupMonitorContext => ({ referencePrices: {}, openedAtBySym
   protectionPlans: {}, protectionModes: {} });
 const positive = (value: unknown): value is number => typeof value === 'number'
   && Number.isFinite(value) && value > 0;
+const quantityTolerance = 1e-10;
+const auraClientOrderId = (value: string | null): boolean => value !== null && /^aura\d+_\d+$/.test(value);
+
+export class OwnershipAmbiguityError extends Error {
+  constructor(message: string) { super(`${message}; reconciliation required`); }
+}
 
 /** A single replaceable restart checkpoint, not an audit/event log. */
 export class AgentRecoveryStore {
@@ -65,20 +71,37 @@ export class AgentRecoveryStore {
   }
 
   async context(snapshot: StartupExchangeSnapshot, references: Readonly<Record<string, number>>): Promise<StartupMonitorContext> {
-    if (snapshot.positions.length === 0) return empty();
-    if (snapshot.positions.length !== 1) throw new Error('Multiple exchange positions cannot be recovered');
-    const position = snapshot.positions[0]!;
     const checkpoint = await this.load();
-    if (!checkpoint || checkpoint.symbol !== position.symbol
-      || Math.abs(checkpoint.quantity - position.quantity) > 1e-10
-      || !positive(position.averageEntryPrice)
-      || Math.abs(checkpoint.entryPrice - position.averageEntryPrice) > 1e-8
-      || checkpoint.updatedAt > snapshot.timestamp) {
-      throw new Error('Missing or mismatched AURA position recovery checkpoint');
+    const claims = new Set<string>();
+    const heldSymbols = new Set(snapshot.positions.filter(position => position.quantity > 0).map(position => position.symbol));
+    for (const order of snapshot.openOrders) if (auraClientOrderId(order.clientOrderId)) claims.add(order.symbol);
+    for (const fill of snapshot.recentFills) if (heldSymbols.has(fill.symbol)
+      && auraClientOrderId(fill.clientOrderId)) claims.add(fill.symbol);
+    if (claims.size > 1 || (checkpoint && [...claims].some(symbol => symbol !== checkpoint.symbol))) {
+      throw new OwnershipAmbiguityError('Multiple AURA ownership claims');
     }
+    if (!checkpoint) {
+      if (claims.size) throw new OwnershipAmbiguityError('AURA order or fill found without a recovery checkpoint');
+      return { ...empty(), referencePrices: references, managedPositions: [],
+        unmanagedInventory: snapshot.positions.map(position => ({ ...position })) };
+    }
+    const holding = snapshot.positions.find(position => position.symbol === checkpoint.symbol);
+    if (!holding || holding.quantity + quantityTolerance < checkpoint.quantity
+      || checkpoint.updatedAt > snapshot.timestamp) {
+      throw new OwnershipAmbiguityError('Missing or mismatched AURA position recovery checkpoint');
+    }
+    const managed: ExchangePositionSnapshot = { symbol: checkpoint.symbol, quantity: checkpoint.quantity,
+      averageEntryPrice: checkpoint.entryPrice, updatedAt: snapshot.timestamp };
+    const unmanaged = snapshot.positions.flatMap(position => {
+      if (position.symbol !== checkpoint.symbol) return [{ ...position }];
+      const remainder = position.quantity - checkpoint.quantity;
+      return remainder > quantityTolerance ? [{ symbol: position.symbol, quantity: remainder,
+        averageEntryPrice: null, updatedAt: position.updatedAt }] : [];
+    });
     const plan = { ...checkpoint.protectionPlan,
       initialStopPrice: Math.max(checkpoint.protectionPlan.initialStopPrice, checkpoint.currentStopPrice) };
-    return { referencePrices: references, openedAtBySymbol: { [position.symbol]: checkpoint.openedAt },
-      protectionPlans: { [position.symbol]: plan }, protectionModes: { [position.symbol]: checkpoint.protectionMode } };
+    return { referencePrices: references, openedAtBySymbol: { [checkpoint.symbol]: checkpoint.openedAt },
+      protectionPlans: { [checkpoint.symbol]: plan }, protectionModes: { [checkpoint.symbol]: checkpoint.protectionMode },
+      managedPositions: [managed], unmanagedInventory: unmanaged };
   }
 }

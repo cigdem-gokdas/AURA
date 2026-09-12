@@ -1,6 +1,6 @@
 import { calculateFeatures } from '../features/calculate.js';
 import type { FeatureSnapshot } from '../features/types.js';
-import type { ExecutionEngine, OrderRequest, StartupExchangeSnapshot } from '../execution/types.js';
+import type { ExchangePositionSnapshot, ExecutionEngine, OrderRequest, StartupExchangeSnapshot } from '../execution/types.js';
 import type { LlmClient, LlmDecisionResult } from '../llm/types.js';
 import type { MarketAdapter, SpotFeeRate, TradingBalanceSnapshot } from '../market/types.js';
 import type { AuditEvent, AuditEventType } from '../memory/audit.js';
@@ -23,6 +23,7 @@ import { ContextPulseCache, crossCheckIndicators, fetchPairEvidence,
   type AtkContextPulse, type AtkCrossMarketContext, type AtkIndicatorCrossCheck } from './atk-evidence.js';
 import { DecisionProvenanceBuffer, traceNode, type DecisionProvenanceNode } from './provenance.js';
 import { ReadOnlyExplainService, freezeJudgeSnapshot, type ExplainIntent, type JudgeSnapshot } from './judge.js';
+import { OwnershipAmbiguityError } from './recovery.js';
 
 export type AgentState = 'BOOTING' | 'PREFLIGHT' | 'OBSERVE_ONLY' | 'LIVE_READY' | 'LIVE' | 'DEGRADED' | 'HALTED';
 
@@ -53,6 +54,7 @@ export interface ObserverSnapshot {
     currentDrawdownPct: number; maximumDrawdownPct: number } | null;
   riskMode: RiskMode | null;
   degradedReason: string | null;
+  unmanagedInventory?: readonly ExchangePositionSnapshot[];
 }
 
 export interface PreflightReport {
@@ -60,6 +62,7 @@ export interface PreflightReport {
   state: AgentState;
   checks: readonly { name: string; passed: boolean; detail: string }[];
   positionSymbol: string | null;
+  unmanagedInventory?: readonly ExchangePositionSnapshot[];
   readiness?: 'READY_FOR_OBSERVE' | 'READY_FOR_DEMO' | 'READY_FOR_LIVE' | 'BLOCKED';
   readLane?: { status: 'READY' | 'FAILED'; serverVersion: string | null; profile: string; readOnly: boolean; toolCount: number };
   writeLane?: { status: 'READY' | 'DISABLED' | 'FAILED'; serverVersion: string | null; profile: string; tools: readonly string[] };
@@ -111,6 +114,8 @@ export class AuraAgent {
   private latestCertificate: RiskCertificate | null = null;
   private selected: CandidateSignal | null = null;
   private degradedReason: string | null = null;
+  private unmanagedInventory: ExchangePositionSnapshot[] = [];
+  private ownershipReconciliationPending = false;
   private pending: { request: OrderRequest; plan: ApprovedOrderPlan; exchangeOrderId: string | null } | null = null;
   private readonly clientIds = new Set<string>();
   private readonly protectionOverrides = new Map<string, OpenPosition>();
@@ -202,7 +207,8 @@ export class AuraAgent {
         crossMarket: this.lastPairContext ? { ...this.lastPairContext, symbols: [...this.lastPairContext.symbols] as [string, string] } : null,
         contextPulse: this.lastPulse ? { ...this.lastPulse } : null },
       safety: { liveArmed: this.config.liveTradingArmed, riskMode: functional.riskMode,
-        protectionMode: position?.protectionMode ?? null, reconciliationPending: this.pending !== null,
+        protectionMode: position?.protectionMode ?? null,
+        reconciliationPending: this.pending !== null || this.ownershipReconciliationPending,
         degradedReason: functional.degradedReason } });
   }
   private lastPositionForJudge: OpenPosition | null = null;
@@ -234,6 +240,8 @@ export class AuraAgent {
   async preflight(): Promise<PreflightReport> {
     if (this.stopping) return { passed: false, state: this.stateValue, checks: [], positionSymbol: null };
     this.stateValue = 'PREFLIGHT';
+    this.unmanagedInventory = [];
+    this.ownershipReconciliationPending = false;
     const checks: { name: string; passed: boolean; detail: string }[] = [];
     let readLaneReport: NonNullable<PreflightReport['readLane']> = { status: 'FAILED', serverVersion: null,
       profile: this.config.profile, readOnly: false, toolCount: 0 };
@@ -285,7 +293,7 @@ export class AuraAgent {
       if (this.deps.connector.readOnly === true && !actualReadOnly) readLaneReport.status = 'FAILED';
       const writeNames = this.deps.execution.getWriteToolNames?.() ?? [];
       if (writeNames.length > 0) this.check(checks, 'WRITE_CAPABILITIES',
-        writeNames.includes('spot_place_order') && writeNames.every(name => name.startsWith('spot_')),
+        writeNames.includes('spot_place_order'),
         writeNames.includes('spot_place_order') ? 'Spot order placement discovered' : 'Spot order placement missing');
       const executionCapabilities = this.deps.execution.getCapabilities?.();
       if (executionCapabilities) {
@@ -315,7 +323,8 @@ export class AuraAgent {
       this.check(checks, 'BALANCES', balance.totalEquityUsd > 0 && Number.isFinite(balance.totalEquityUsd), 'Balance and holdings readable');
       const snapshot = await this.deps.execution.getStartupSnapshot();
       const snapshotValid = snapshot.profile === this.config.profile && snapshot.positions.every(p => this.config.symbols.includes(p.symbol))
-        && snapshot.positions.length <= 1 && snapshot.openOrders.every(o => this.config.symbols.includes(o.symbol))
+        && new Set(snapshot.positions.map(p => p.symbol)).size === snapshot.positions.length
+        && snapshot.openOrders.every(o => this.config.symbols.includes(o.symbol))
         && snapshot.recentFills.every(fill => this.config.symbols.includes(fill.symbol))
         && this.config.symbols.every(symbol => snapshot.feeRates.some(fee => fee.symbol === symbol));
       this.check(checks, 'STARTUP_SNAPSHOT', snapshotValid, 'Exchange positions, orders, fills and fees');
@@ -329,7 +338,16 @@ export class AuraAgent {
         : local ? { referencePrices: references, openedAtBySymbol: { [local.symbol]: local.openedAt },
           protectionPlans: { [local.symbol]: local.protectionPlan },
           protectionModes: { [local.symbol]: local.protectionMode } } : emptyContext();
-      const restored = this.monitor.reconcileStartup(snapshot, context);
+      const managedPositions = context.managedPositions ?? snapshot.positions;
+      this.unmanagedInventory = (context.unmanagedInventory ?? []).map(position => ({ ...position }));
+      this.check(checks, 'POSITION_OWNERSHIP', managedPositions.length <= 1,
+        managedPositions.length <= 1 ? `${managedPositions.length} AURA-managed active trade(s)`
+          : 'Multiple AURA-managed active trades require reconciliation');
+      this.check(checks, 'UNMANAGED_INVENTORY', true,
+        this.unmanagedInventory.length ? this.unmanagedInventory.map(position =>
+          `${position.symbol} ${position.quantity}`).join(', ') : 'None');
+      const managedSnapshot: StartupExchangeSnapshot = { ...snapshot, positions: managedPositions };
+      const restored = this.monitor.reconcileStartup(managedSnapshot, context);
       this.check(checks, 'MONITOR_RECONCILIATION', restored.status === 'RESTORED', restored.reason);
       const unresolvedOrders = snapshot.openOrders.length > 0 || this.pending !== null;
       this.check(checks, 'UNRESOLVED_ORDERS', !unresolvedOrders, unresolvedOrders ? 'Open or ambiguous order exists' : 'None');
@@ -350,17 +368,21 @@ export class AuraAgent {
       const readiness = !passed ? 'BLOCKED' : this.config.profile === 'demo' ? 'READY_FOR_DEMO'
         : this.config.liveTradingArmed ? 'READY_FOR_LIVE' : 'READY_FOR_OBSERVE';
       const report: PreflightReport = { passed, state: this.stateValue, checks, positionSymbol: restored.position?.symbol ?? null,
+        unmanagedInventory: this.unmanagedInventory.map(position => ({ ...position })),
         readiness, blockers: checks.filter(item => !item.passed).map(item => item.name),
         readLane: readLaneReport, writeLane: writeLaneReport };
       this.lastPreflight = report;
-      this.audit('PREFLIGHT', { passed, readiness, checks, positionSymbol: report.positionSymbol });
+      this.audit('PREFLIGHT', { passed, readiness, checks, positionSymbol: report.positionSymbol,
+        unmanagedInventory: report.unmanagedInventory });
       this.audit('ATK_MCP_HEALTH', { readLane: readLaneReport, writeLane: writeLaneReport });
       this.audit('STATE_TRANSITION', { state: this.stateValue });
       this.auditNewMcpTraces();
+      if (this.unmanagedInventory.length) await this.publish();
       return report;
     } catch (error) {
       this.mcpHealthy = false;
       this.stateValue = 'OBSERVE_ONLY';
+      this.ownershipReconciliationPending = error instanceof OwnershipAmbiguityError;
       const detail = error instanceof Error ? error.message : 'Unknown preflight error';
       this.degradedReason = detail;
       try {
@@ -382,6 +404,7 @@ export class AuraAgent {
       this.check(checks, 'EXCHANGE_PREFLIGHT', false, detail);
       const report: PreflightReport = { passed: false, state: this.stateValue, checks,
         positionSymbol: (await this.monitor?.getOpenPosition())?.symbol ?? null,
+        unmanagedInventory: this.unmanagedInventory.map(position => ({ ...position })),
         readiness: 'BLOCKED', blockers: checks.filter(item => !item.passed).map(item => item.name),
         readLane: readLaneReport, writeLane: writeLaneReport };
       this.lastPreflight = report;
@@ -389,6 +412,7 @@ export class AuraAgent {
       this.audit('ERROR', { stage: 'PREFLIGHT', reason: detail });
       this.audit('ATK_MCP_HEALTH', { readLane: readLaneReport, writeLane: writeLaneReport });
       this.auditNewMcpTraces();
+      if (this.unmanagedInventory.length || this.ownershipReconciliationPending) await this.publish();
       return report;
     }
   }
@@ -434,6 +458,19 @@ export class AuraAgent {
       throw new Error('Cross-symbol evaluation mismatch');
     this.regimes.set(evaluation.symbol, evaluation.nextRegimeState);
     this.evaluations.set(evaluation.symbol, evaluation);
+  }
+
+  /** A flat monitor may coexist with inventory, but not an unreconciled AURA trade. */
+  private async assertFlatExchange(snapshot: StartupExchangeSnapshot): Promise<void> {
+    if (snapshot.profile !== this.config.profile || snapshot.openOrders.length > 0) {
+      throw new Error('Exchange profile or open orders changed while local monitor is flat');
+    }
+    const context = this.deps.startupContext
+      ? await this.deps.startupContext(snapshot, {}) : emptyContext();
+    if ((context.managedPositions ?? snapshot.positions).length > 0) {
+      throw new OwnershipAmbiguityError('AURA-managed trade appeared while local monitor is flat');
+    }
+    this.unmanagedInventory = (context.unmanagedInventory ?? []).map(position => ({ ...position }));
   }
 
   private currentPosition(position: OpenPosition | null): OpenPosition | null {
@@ -644,11 +681,7 @@ export class AuraAgent {
           return result;
         }
         const exchangeBeforeRanking = await this.deps.execution.getStartupSnapshot();
-        if (exchangeBeforeRanking.profile !== this.config.profile || exchangeBeforeRanking.positions.length > 0
-          || exchangeBeforeRanking.openOrders.length > 0) {
-          this.degrade('Exchange holdings or orders changed while local monitor is flat');
-          return finish({ status: 'BLOCKED', selectedSymbol: null, reason: this.degradedReason! });
-        }
+        await this.assertFlatExchange(exchangeBeforeRanking);
         const evaluations: SymbolEvaluation[] = [];
         for (const symbol of this.config.symbols) {
           const evaluation = await this.evaluate(symbol, null);
@@ -717,19 +750,20 @@ export class AuraAgent {
           this.latestLlm.status === 'SUCCESS');
         const balance = await this.deps.market.getTradingBalanceSnapshot();
         const exchangeAtRisk = await this.deps.execution.getStartupSnapshot();
+        await this.assertFlatExchange(exchangeAtRisk);
         const performance = await this.monitor!.getPerformanceState();
         const riskPosition = await this.monitor!.getOpenPosition();
-        const riskOpenPositions = exchangeAtRisk.positions.map(position => {
-          const reference = this.evaluations.get(position.symbol)?.feature.midPrice ?? position.averageEntryPrice ?? 0;
-          const notional = position.quantity * reference;
-          return { symbol: position.symbol, quantity: position.quantity, notional,
-            exposurePct: notional / exchangeAtRisk.totalEquityUsd };
-        });
-        if (riskPosition && !riskOpenPositions.some(item => item.symbol === riskPosition.symbol)) {
-          const notional = riskPosition.quantity * riskPosition.markPrice;
-          riskOpenPositions.push({ symbol: riskPosition.symbol, quantity: riskPosition.quantity, notional,
-            exposurePct: notional / exchangeAtRisk.totalEquityUsd });
+        // Raw spot balances are inventory, not active trades. Only the reconciled
+        // monitor position enters the unchanged hard risk position gates.
+        if (riskPosition && !exchangeAtRisk.positions.some(item => item.symbol === riskPosition.symbol
+          && item.quantity + 1e-10 >= riskPosition.quantity)) {
+          throw new Error('AURA-managed position no longer reconciles with exchange inventory');
         }
+        const riskOpenPositions = riskPosition ? (() => {
+          const notional = riskPosition.quantity * riskPosition.markPrice;
+          return [{ symbol: riskPosition.symbol, quantity: riskPosition.quantity, notional,
+            exposurePct: notional / exchangeAtRisk.totalEquityUsd }];
+        })() : [];
         const account = { equity: exchangeAtRisk.totalEquityUsd,
           availableQuoteBalance: exchangeAtRisk.balances.find(item => item.currency === 'USDT')?.available ?? 0,
           dayStartEquity: performance.dayStartEquity, peakEquity: Math.max(performance.peakEquity, exchangeAtRisk.totalEquityUsd),
@@ -791,6 +825,10 @@ export class AuraAgent {
         return finish({ status: submission === 'ACCEPTED' ? 'SUBMITTED' : 'BLOCKED',
           selectedSymbol: selected.symbol, reason: submission });
       } catch (error) {
+        if (error instanceof OwnershipAmbiguityError) {
+          this.ownershipReconciliationPending = true;
+          this.unmanagedInventory = [];
+        }
         this.degrade(error instanceof Error ? error.message : 'Cycle failure');
         this.audit('ERROR', { stage: 'SLOW_CYCLE', reason: this.degradedReason },
           { cycleId: provenanceCycleId, ...(this.selected ? { symbol: this.selected.symbol } : {}) });
@@ -943,7 +981,8 @@ export class AuraAgent {
           dailyPnl: equity.dailyPnl, dailyReturnPct: equity.dailyReturn * 100,
           currentDrawdownPct: equity.currentDrawdown * 100,
           maximumDrawdownPct: equity.maximumDrawdown * 100 } : null,
-        riskMode: this.latestCertificate?.riskMode ?? null, degradedReason: this.degradedReason };
+        riskMode: this.latestCertificate?.riskMode ?? null, degradedReason: this.degradedReason,
+        unmanagedInventory: this.unmanagedInventory.map(position => ({ ...position })) };
       this.lastSnapshot = structuredClone(snapshot);
       const observing = this.deps.observer?.(structuredClone(snapshot));
       if (observing) void Promise.resolve(observing).catch(() => undefined);
