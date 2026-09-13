@@ -1,8 +1,6 @@
 # AURA
 
-AURA is a TypeScript scaffold for a small-liquid-universe opportunity selector. The initial tracked universe is `BTC-USDT,ETH-USDT`. Markets are observed independently, but the agent may hold at most **one** concurrent spot position across the entire universe. This is not a diversification bot.
-
-This repository currently contains types, configuration contracts, a strict LLM response schema, and a static dashboard shell. Agent commands are intentionally non-functional. There is no market access, indicator calculation, strategy, LLM request, risk decision, exchange execution, autonomous trading, or backtesting behavior.
+AURA selects a daily liquid USDT spot universe through the read-only ATK lane and manages at most the configured number of AURA-owned positions (default 3). Exchange wallet inventory without AURA ownership evidence is not an active AURA trade.
 
 ## Setup
 
@@ -13,9 +11,33 @@ npm install
 cp .env.example .env
 npm run typecheck
 npm test
-npm run dev:web
+npm run agent:preflight
 ```
 
-The `.env.example` values are illustrative and contain no credentials. `SYMBOLS` is a comma-separated configuration value; the typed runtime config represents it as `string[]`. Runtime parsing and validation are future work.
+## Operator controls
 
-`agent:preflight`, `agent:calibrate`, `agent:demo-smoke`, and `agent:run` target explicit, non-functional stubs in `src/main.ts`. `scripts/backtest.ts` is a TODO placeholder.
+To start live trading, the launch environment must explicitly contain **both** required values; all normal preflight, risk, and protection gates still apply:
+
+```sh
+OKX_PROFILE=live LIVE_TRADING_ARMED=true npm run agent:run
+```
+
+From a second terminal in this project directory, disarm new entries while leaving existing protective monitoring active:
+
+```sh
+npm run agent:disarm
+```
+
+To latch the kill switch, block new BUY submissions and immediately request a deterministic protective-exit cycle for managed positions:
+
+```sh
+npm run agent:kill
+```
+
+The control commands acknowledge the latch, not an exchange fill. Check AURA reconciliation and position state to confirm closure. An ambiguous in-flight order remains subject to the existing no-blind-retry rule. The local control socket defaults to `.aura/agent-control.sock` (mode `0600`); set the same `AURA_CONTROL_SOCKET_PATH` for the running agent and the second-terminal command if overriding it. Disarm and kill are one-way for that process. To rearm, stop the agent and launch a new `agent:run` with both live values and a successful preflight. Editing `.env` does not change a running process.
+
+For a read-only live preflight with arming disabled:
+
+```sh
+OKX_PROFILE=live LIVE_TRADING_ARMED=false npm run agent:preflight
+```

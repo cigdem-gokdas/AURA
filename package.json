@@ -16,6 +16,8 @@
     "agent:demo-smoke": "tsx src/main.ts demo-smoke",
     "agent:attached-protection-smoke": "tsx src/main.ts attached-protection-smoke",
     "agent:run": "tsx src/main.ts run",
+    "agent:kill": "tsx src/main.ts kill",
+    "agent:disarm": "tsx src/main.ts disarm",
     "status:mcp": "node --import tsx src/status-mcp/server.ts"
   },
   "dependencies": {

@@ -184,6 +184,8 @@ export class AuraAgent {
   private reconnectAttempts = 0;
   private sequence = 0;
   private mcpHealthy = false;
+  private entriesDisarmed = false;
+  private killSwitchLatched = false;
   private readonly contextPulse: ContextPulseCache;
   private readonly provenance = new DecisionProvenanceBuffer();
   private cycleNodes: DecisionProvenanceNode[] = [];
@@ -229,6 +231,28 @@ export class AuraAgent {
     const write = await this.deps.execution.getWriteHealth?.();
     return read.connected && read.status === 'HEALTHY' && read.profile === this.config.profile
       && (!write || (write.connected && write.status === 'HEALTHY' && write.profile === this.config.profile));
+  }
+
+  private killSwitchActive(): boolean { return this.killSwitchLatched || (this.deps.killSwitch?.() ?? false); }
+
+  /** Runtime disarm is one-way; rearming requires a fresh, fully checked agent:run. */
+  disarmEntries(): void {
+    this.entriesDisarmed = true;
+    this.audit('STATE_TRANSITION', { control: 'DISARM', entriesDisarmed: true });
+    void this.publish();
+  }
+
+  /** Latch before any await, then run deterministic protection as soon as the active cycle releases its lock. */
+  engageKillSwitch(): void {
+    this.entriesDisarmed = true;
+    this.killSwitchLatched = true;
+    this.audit('STATE_TRANSITION', { control: 'KILL', entriesDisarmed: true, protectiveExitRequested: true });
+    void this.publish();
+    const active = this.active;
+    void (async () => {
+      await active?.catch(() => undefined);
+      if (!this.stopping) await this.runFastCycle();
+    })().catch(error => this.degrade(error instanceof Error ? error.message : 'Kill-switch protection cycle failed'));
   }
 
   constructor(readonly config: AgentConfig, private readonly deps: AgentDependencies) {
@@ -300,7 +324,8 @@ export class AuraAgent {
         indicatorCrossChecks: this.lastIndicatorChecks.map(item => ({ ...item })),
         crossMarket: this.lastPairContext ? { ...this.lastPairContext, symbols: [...this.lastPairContext.symbols] as [string, string] } : null,
         contextPulse: this.lastPulse ? { ...this.lastPulse } : null },
-      safety: { liveArmed: this.config.liveTradingArmed, riskMode: functional.riskMode,
+      safety: { liveArmed: this.config.liveTradingArmed && !this.entriesDisarmed
+        && !this.killSwitchActive(), riskMode: functional.riskMode,
         protectionMode: position?.protectionMode ?? null,
         protectionModes: Object.fromEntries((functional.positions ?? []).map(item =>
           [item.symbol, item.protectionMode ?? 'UNAVAILABLE'])),
@@ -815,7 +840,7 @@ export class AuraAgent {
     }
     this.protectionOverrides.set(symbol, updated);
     const equity = await monitor.getEquitySnapshot();
-    const immediateReason = (this.deps.killSwitch?.() ?? false) ? 'KILL_SWITCH'
+    const immediateReason = this.killSwitchActive() ? 'KILL_SWITCH'
       : equity.currentDrawdown >= this.config.risk.hardPeakDrawdownPct ? 'HARD_DRAWDOWN'
         : hardStopBreached(symbol, updated, ticker.last) ? 'HARD_STOP'
           : takeProfitReached(symbol, updated, ticker.last) ? 'TAKE_PROFIT'
@@ -854,6 +879,13 @@ export class AuraAgent {
   private async submit(plan: ApprovedOrderPlan): Promise<OrderSubmissionResult> {
     const identity = { cycleId: plan.cycleId, decisionId: plan.decisionId,
       clientOrderId: plan.clientOrderId, symbol: plan.symbol };
+    if (plan.side === 'BUY' && (this.entriesDisarmed || this.killSwitchActive())) {
+      this.audit('EXECUTION_RESULT', { status: 'REJECTED', reason: 'Runtime entries disarmed' }, identity);
+      return { status: 'REJECTED', symbol: plan.symbol, clientOrderId: plan.clientOrderId,
+        cycleId: plan.cycleId, decisionId: plan.decisionId, accepted: false,
+        exchangeOrderId: null, reason: 'Runtime entries disarmed', timestamp: this.now(),
+        protectionMode: null, protectionVerified: false };
+    }
     this.audit('EXECUTION_SUBMITTED', { side: plan.side, quantity: plan.quantity,
       referencePrice: plan.referencePrice, protectionMode: plan.protection.protectionMode }, identity);
     const result = await this.deps.execution.submitApprovedOrder(plan);
@@ -1088,6 +1120,8 @@ export class AuraAgent {
             return finish({ status: 'MONITORING', selectedSymbol: null,
               reason: `Managed-position cap ${this.config.risk.maxConcurrentPositions} is full` });
         }
+        if (this.entriesDisarmed || this.killSwitchActive())
+          return finish({ status: 'BLOCKED', selectedSymbol: null, reason: 'Runtime entries disarmed' });
         const exchangeBeforeRanking = await this.deps.execution.getStartupSnapshot();
         await this.assertExchangeMatchesMonitor(exchangeBeforeRanking);
         const held = await this.openPositions();
@@ -1200,7 +1234,7 @@ export class AuraAgent {
           timestamp: this.now(), llmResult: this.latestLlm,
           clientOrderId, knownClientOrderIds: [...this.clientIds], cycleId: id, decisionId: id,
           quantityStep: selectedMeta.quantityStep,
-          killSwitchActive: this.deps.killSwitch?.() ?? false, cooldownUntil: null,
+          killSwitchActive: this.killSwitchActive(), cooldownUntil: null,
           protectionMode: 'CLIENT_SIDE' };
         let risk = evaluateEntryRisk(riskInput);
         if (risk.decision.approved && risk.plan) {

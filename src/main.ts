@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { AuraAgent, type PreflightReport } from './agent/agent.js';
 import { agentConfigFromEnv } from './agent/config.js';
 import { AgentRecoveryStore } from './agent/recovery.js';
+import { agentControlPath, sendAgentControl, startAgentControl } from './agent/control.js';
 import { DemoSmokeRecoveryStore } from './agent/demo-smoke-recovery.js';
 import { OkxExecutionEngine } from './execution/engine.js';
 import { createLlmClient } from './llm/openai.js';
@@ -10,7 +11,8 @@ import { AtkReadClient, AtkWriteClient } from './okx/lanes.js';
 import { AuditLog, type AuditEvent } from './memory/audit.js';
 import { publishJudgeSnapshot } from './status-mcp/bridge.js';
 
-export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'attached-protection-smoke' | 'run';
+export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'attached-protection-smoke'
+  | 'run' | 'kill' | 'disarm';
 
 /** Two independent MCP stdio processes: read-only evidence and spot execution. */
 export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
@@ -65,9 +67,14 @@ function printReport(report: PreflightReport): void {
 }
 
 export async function main(command: string | undefined = process.argv[2], env: NodeJS.ProcessEnv = process.env): Promise<number> {
-  if (!['preflight', 'calibrate', 'demo-smoke', 'attached-protection-smoke', 'run'].includes(command ?? '')) {
-    process.stderr.write('Usage: npm run agent:{preflight|calibrate|demo-smoke|attached-protection-smoke|run}\n');
+  if (!['preflight', 'calibrate', 'demo-smoke', 'attached-protection-smoke', 'run', 'kill', 'disarm'].includes(command ?? '')) {
+    process.stderr.write('Usage: npm run agent:{preflight|calibrate|demo-smoke|attached-protection-smoke|run|kill|disarm}\n');
     return 2;
+  }
+  if (command === 'kill' || command === 'disarm') {
+    const reply = await sendAgentControl(agentControlPath(env), command === 'kill' ? 'KILL' : 'DISARM');
+    process.stdout.write(`${reply}\n`);
+    return 0;
   }
   let audit: AuditLog | null = null;
   let auditDegraded = false;
@@ -96,11 +103,17 @@ export async function main(command: string | undefined = process.argv[2], env: N
     const report = await agent.preflight();
     printReport(report);
     if (!report.passed || !agent.activate()) { await agent.shutdown(); await closeAudit(); return 1; }
+    let closeControl: () => Promise<void>;
+    try { closeControl = await startAgentControl(agentControlPath(env), control => {
+      if (control === 'KILL') agent.engageKillSwitch();
+      else agent.disarmEntries();
+    }); }
+    catch (error) { await agent.shutdown(); await closeAudit(); throw error; }
     let stopping = false;
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
-      void agent.shutdown().then(closeAudit).then(() => { process.exitCode = 0; })
+      void closeControl().then(() => agent.shutdown()).then(closeAudit).then(() => { process.exitCode = 0; })
         .catch(error => { process.stderr.write(`AURA shutdown failed: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
           process.exitCode = 1; });
     };

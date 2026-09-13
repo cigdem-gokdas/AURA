@@ -246,6 +246,48 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
+  it('disarms a running live agent without stopping deterministic monitoring', async () => {
+    const h = harness();
+    expect((await h.agent.preflight()).passed).toBe(true);
+    expect(h.agent.activate()).toBe(true);
+    h.agent.disarmEntries();
+    await vi.waitFor(() => expect(h.agent.getJudgeSnapshot()?.safety.liveArmed).toBe(false));
+    expect((await h.agent.runSlowCycle()).status).toBe('BLOCKED');
+    expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
+  });
+
+  it('latches operator kill before a new BUY and requests a managed protective SELL without LLM', async () => {
+    const h = harness({ held: 'BTC-USDT', llmFailure: true });
+    expect((await h.agent.preflight()).passed).toBe(true);
+    expect(h.agent.activate()).toBe(true);
+    h.agent.engageKillSwitch();
+    await vi.waitFor(() => expect(h.agent.getJudgeSnapshot()?.safety.liveArmed).toBe(false));
+    await vi.waitFor(() => expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0]).toMatchObject({
+      symbol: 'BTC-USDT', side: 'SELL',
+    });
+    expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
+    expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls.some(([plan]) => plan.side === 'BUY')).toBe(false);
+    await h.agent.shutdown();
+  });
+
+  it('does not submit a BUY when kill arrives during an already-running decision cycle', async () => {
+    let release!: () => void;
+    const evaluationDelay = new Promise<void>(done => { release = done; });
+    const h = harness({ evaluationDelay });
+    expect((await h.agent.preflight()).passed).toBe(true);
+    expect(h.agent.activate()).toBe(true);
+    const cycle = h.agent.runSlowCycle();
+    await vi.waitFor(() => expect(h.evaluated).toContain('BTC-USDT'));
+    h.agent.engageKillSwitch();
+    release();
+    expect((await cycle).status).toBe('REJECTED');
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
+  });
+
   it.each(symbols)('reconstructs an exchange %s position while evaluating another symbol once', async held => {
     const h = harness({ held });
     const report = await h.agent.preflight();
