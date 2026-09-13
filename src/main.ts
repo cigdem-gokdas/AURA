@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { AuraAgent, type PreflightReport } from './agent/agent.js';
 import { agentConfigFromEnv } from './agent/config.js';
 import { AgentRecoveryStore } from './agent/recovery.js';
-import { agentControlPath, sendAgentControl, startAgentControl } from './agent/control.js';
+import { agentControlPath, assertAgentNotRunning, sendAgentControl, startAgentControl } from './agent/control.js';
 import { DemoSmokeRecoveryStore } from './agent/demo-smoke-recovery.js';
 import { OkxExecutionEngine } from './execution/engine.js';
 import { DashboardServer, type DashboardServerOptions } from './dashboard/server.js';
@@ -100,6 +100,7 @@ export async function main(command: string | undefined = process.argv[2], env: N
     process.stdout.write(`${reply}\n`);
     return 0;
   }
+  if (command === 'run') await assertAgentNotRunning(agentControlPath(env));
   let audit: AuditLog | null = null;
   let auditDegraded = false;
   const auditFailure = (error: unknown): void => {

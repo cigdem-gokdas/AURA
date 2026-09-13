@@ -33,6 +33,11 @@ async function removeStaleSocket(path: string): Promise<void> {
   });
 }
 
+/** Reject a duplicate run before it starts MCP clients or makes exchange reads. */
+export async function assertAgentNotRunning(path: string): Promise<void> {
+  await removeStaleSocket(resolve(path));
+}
+
 /** One local agent:run owns this socket; it exposes no exchange or arming command. */
 export async function startAgentControl(path: string, onCommand: (command: AgentControlCommand) => void): Promise<() => Promise<void>> {
   const socketPath = resolve(path);

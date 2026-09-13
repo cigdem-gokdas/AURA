@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { agentControlPath, sendAgentControl, startAgentControl } from '../../src/agent/control.js';
+import { main } from '../../src/main.js';
 
 const runFile = promisify(execFile);
 
@@ -23,6 +24,8 @@ describe('operator control from a second process', () => {
       expect(kill.stdout).toContain('KILL_SWITCH_ACTIVE');
       expect(received).toEqual(['DISARM', 'KILL']);
       await expect(startAgentControl(path, () => undefined)).rejects.toThrow('already active');
+      await expect(main('run', { ...env, OKX_PROFILE: 'live', LIVE_TRADING_ARMED: 'true' }))
+        .rejects.toThrow('already active');
     } finally { await close(); await rm(directory, { recursive: true, force: true }); }
   }, 15_000);
 

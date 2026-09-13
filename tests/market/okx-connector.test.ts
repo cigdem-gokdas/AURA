@@ -292,4 +292,53 @@ describe('bounded read-lane retry', () => {
       .rejects.toMatchObject({ category: 'TOOL_CALL_FAILED' });
     expect(client.callTool).toHaveBeenCalledTimes(1);
   });
+
+  it('paces account fee reads below the documented five-per-two-second user limit', async () => {
+    vi.useFakeTimers();
+    try {
+      const readConfig: OkxConnectorConfig = { ...config, lane: 'READ', readOnly: true };
+      const { client, factory } = fakeSession(['account_get_trade_fee']);
+      client.callTool.mockImplementation(async () => ({ structuredContent: {
+        tool: 'account_get_trade_fee', ok: true, data: { endpoint: '/api/v5/account/trade-fee',
+          requestTime: '2026-09-12T00:00:00Z', data: [{ maker: '-0.0008', taker: '-0.001' }] },
+      } }));
+      const connector = new OkxMcpConnector(readConfig, factory);
+      await connector.connect();
+      const first = connector.callTool('account_get_trade_fee', { instType: 'SPOT', instId: 'BTC-USDT' });
+      const second = connector.callTool('account_get_trade_fee', { instType: 'SPOT', instId: 'ETH-USDT' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.callTool).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(549);
+      expect(client.callTool).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await Promise.all([first, second]);
+      expect(client.callTool).toHaveBeenCalledTimes(2);
+      await connector.disconnect();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('waits for the rate-limit window before its sole READ retry', async () => {
+    vi.useFakeTimers();
+    try {
+      const readConfig: OkxConnectorConfig = { ...config, lane: 'READ', readOnly: true };
+      const { client, factory } = fakeSession(['account_get_trade_fee']);
+      client.callTool.mockResolvedValueOnce({ isError: true, structuredContent: {
+        ok: false, tool: 'account_get_trade_fee', code: '50011', msg: 'Too Many Requests',
+      } }).mockResolvedValueOnce({ structuredContent: { ok: true,
+        tool: 'account_get_trade_fee', data: { endpoint: '/api/v5/account/trade-fee',
+          requestTime: '2026-09-12T00:00:00Z', data: [{ maker: '-0.0008', taker: '-0.001' }] },
+      } });
+      const connector = new OkxMcpConnector(readConfig, factory);
+      await connector.connect();
+      const result = connector.callTool('account_get_trade_fee', { instType: 'SPOT', instId: 'BTC-USDT' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.callTool).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(2_099);
+      expect(client.callTool).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(result).resolves.toBeDefined();
+      expect(client.callTool).toHaveBeenCalledTimes(2);
+      await connector.disconnect();
+    } finally { vi.useRealTimers(); }
+  });
 });

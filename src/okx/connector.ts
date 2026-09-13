@@ -181,6 +181,8 @@ export class OkxMcpConnector implements OkxConnector {
   private registry = new AtkCapabilityRegistry([]);
   private serverVersion: string | null = null;
   private readonly traces = new AtkTraceBuffer();
+  private feeCallQueue: Promise<void> = Promise.resolve();
+  private nextFeeCallAt = 0;
 
   constructor(
     readonly config: OkxConnectorConfig,
@@ -327,6 +329,19 @@ export class OkxMcpConnector implements OkxConnector {
     return [...this.toolDefinitions];
   }
 
+  /** OKX permits five account/trade-fee reads per two seconds per user ID. */
+  private async paceFeeCall(): Promise<void> {
+    const previous = this.feeCallQueue;
+    let release!: () => void;
+    this.feeCallQueue = new Promise<void>(resolve => { release = resolve; });
+    await previous;
+    try {
+      const delay = Math.max(0, this.nextFeeCallAt - Date.now());
+      if (delay > 0) await new Promise<void>(resolve => setTimeout(resolve, delay));
+      this.nextFeeCallAt = Date.now() + 550;
+    } finally { release(); }
+  }
+
   /**
    * A transient exchange/API failure on the server-enforced read-only lane is retried
    * exactly once after a short pause. WRITE-lane calls are never retried: an order or
@@ -343,7 +358,9 @@ export class OkxMcpConnector implements OkxConnector {
       const transientRead = this.config.lane === 'READ' && this.readOnly
         && error instanceof OkxConnectorError && error.category === 'TOOL_CALL_FAILED';
       if (!transientRead) throw error;
-      await new Promise<void>(resolve => setTimeout(resolve, 400));
+      const rateLimited = error.diagnostic?.exchangeCode === '50011'
+        || /too many requests|rate limit/i.test(error.diagnostic?.exchangeMessage ?? '');
+      await new Promise<void>(resolve => setTimeout(resolve, rateLimited ? 2_100 : 400));
       return this.callToolOnce<T>(toolName, args, traceContext);
     }
   }
@@ -373,6 +390,8 @@ export class OkxMcpConnector implements OkxConnector {
       throw new OkxConnectorError('TOOL_NOT_AVAILABLE', 'WRITE lane exposes only spot execution and capability tools');
     }
     assertNoCredentials(args);
+    if (this.lane === 'READ' && this.readOnly && toolName === 'account_get_trade_fee')
+      await this.paceFeeCall();
     const started = Date.now();
     let success = false;
     let errorCode: string | null = null;

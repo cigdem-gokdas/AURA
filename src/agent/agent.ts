@@ -483,20 +483,17 @@ export class AuraAgent {
         'READ lane order, open-order and fill queries');
       }
       for (const symbol of this.config.symbols) {
-        const [meta, fee, orders, fills] = await Promise.all([
-          this.deps.market.getInstrumentMeta(symbol), this.deps.market.getSpotFeeRate(symbol),
+        const [meta, orders, fills] = await Promise.all([
+          this.deps.market.getInstrumentMeta(symbol),
           this.deps.market.getOpenSpotOrders(symbol), this.deps.market.getRecentSpotFills(symbol),
         ]);
         const validMeta = meta.symbol === symbol && meta.instrumentId === symbol
           && [meta.minOrderSize, meta.quantityStep, meta.tickSize].every(x => Number.isFinite(x) && x > 0);
         this.check(checks, `INSTRUMENT:${symbol}`, validMeta, validMeta
           ? `minSize=${meta.minOrderSize} lot=${meta.quantityStep} tick=${meta.tickSize}` : 'Invalid metadata');
-        this.check(checks, `FEE:${symbol}`, fee.symbol === symbol && Number.isFinite(fee.takerRate),
-          `taker=${fee.takerRate} maker=${fee.makerRate}`);
         this.check(checks, `ORDERS_FILLS:${symbol}`, orders.every(o => o.symbol === symbol)
           && fills.every(f => f.symbol === symbol), 'Read-only order/fill history');
         if (validMeta) this.metadata.set(symbol, meta);
-        this.feeRates.set(symbol, fee);
       }
       const balance = await this.deps.market.getTradingBalanceSnapshot();
       this.check(checks, 'BALANCES', balance.totalEquityUsd > 0 && Number.isFinite(balance.totalEquityUsd), 'Balance and holdings readable');
@@ -507,6 +504,13 @@ export class AuraAgent {
         && snapshot.recentFills.every(fill => this.config.symbols.includes(fill.symbol))
         && this.config.symbols.every(symbol => snapshot.feeRates.some(fee => fee.symbol === symbol));
       this.check(checks, 'STARTUP_SNAPSHOT', snapshotValid, 'Exchange positions, orders, fills and fees');
+      for (const symbol of this.config.symbols) {
+        const fee = snapshot.feeRates.find(item => item.symbol === symbol);
+        const validFee = !!fee && Number.isFinite(fee.makerRate) && Number.isFinite(fee.takerRate);
+        this.check(checks, `FEE:${symbol}`, validFee,
+          validFee ? `taker=${fee.takerRate} maker=${fee.makerRate}` : 'Missing or invalid fee rate');
+        if (validFee) this.feeRates.set(symbol, fee);
+      }
       const references = await this.referencePrices();
       this.check(checks, 'FRESH_MARKET', true, 'Ticker freshness confirmed for all symbols');
       if (!this.monitor) this.monitor = this.deps.createMonitor?.(snapshot)

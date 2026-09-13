@@ -393,6 +393,17 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
+  it('uses verified startup snapshot fees without duplicate per-symbol fee reads', async () => {
+    const h = harness();
+    vi.mocked(h.market.getSpotFeeRate).mockRejectedValue(new Error('duplicate fee lookup'));
+    const report = await h.agent.preflight();
+    expect(report.passed).toBe(true);
+    expect(report.checks.find(check => check.name === 'FEE:BTC-USDT'))
+      .toMatchObject({ passed: true, detail: 'taker=0.001 maker=0.001' });
+    expect(h.market.getSpotFeeRate).not.toHaveBeenCalled();
+    await h.agent.shutdown();
+  });
+
   it('blocks readiness when a required discovered READ capability is missing', async () => {
     const h = harness({ missingTool: 'market_get_candles' });
     const report = await h.agent.preflight();
