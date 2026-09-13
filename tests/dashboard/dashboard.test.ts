@@ -6,6 +6,7 @@ import WebSocket from 'ws';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DashboardServer } from '../../src/dashboard/server.js';
+import { dashboardOptionsFromEnv, startRunDashboard } from '../../src/main.js';
 import { publishJudgeSnapshot } from '../../src/status-mcp/bridge.js';
 import { ReadOnlyExplainService } from '../../src/agent/judge.js';
 import {
@@ -90,6 +91,19 @@ async function eventually(
 }
 
 describe('read-only dashboard transport', () => {
+  it('uses the agent:run dashboard bridge paths and provides loopback HTTP/WebSocket endpoints', async () => {
+    const { dir, status, audit, server } = await setup();
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>AURA</title>');
+    const options = dashboardOptionsFromEnv({ AURA_STATUS_SNAPSHOT_PATH: status,
+      AURA_AUDIT_PATH: audit, AURA_DASHBOARD_PORT: '8787' });
+    expect(options).toMatchObject({ statusPath: status, auditPath: audit, port: 8787 });
+    const started = await startRunDashboard({}, server);
+    expect(started.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(started.websocketUrl).toBe(`${started.url.replace('http:', 'ws:')}/stream`);
+    expect(await fetch(started.url).then(response => response.text())).toContain('<title>AURA</title>');
+    const ws = await connect(started.websocketUrl);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+  });
   it('reads only a matching sanitized critic grade from the bounded audit tail', async () => {
     const { status, audit, server } = await setup();
     await publishJudgeSnapshot(status, fixture());

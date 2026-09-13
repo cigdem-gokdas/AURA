@@ -24,6 +24,7 @@ import { evaluateEntryRisk } from '../risk/evaluate.js';
 import type { ApprovedOrderPlan, PreTradeRiskInput, RiskCertificate, RiskMode } from '../risk/types.js';
 import { summarizeSignalCalibration } from '../signal/calibration.js';
 import { generateCandidate } from '../signal/generate.js';
+import { costContextFromOkxTakerFee } from '../signal/cost.js';
 import { rankEntryCandidates } from '../signal/rank.js';
 import type { CandidateSignal, SignalCalibrationDiagnostics } from '../signal/types.js';
 import { validRiskConfig, type AgentConfig } from './config.js';
@@ -648,7 +649,7 @@ export class AuraAgent {
     const transition = transitionRegime(symbol, feature, previous);
     const candidate = generateCandidate(symbol, feature, transition.decision,
       { openLong: position ? { symbol: position.symbol, quantity: position.quantity } : null },
-      { feeBpsPerSide: Math.abs(fee.takerRate) * 10_000, estimatedSlippageBpsPerSide: feature.spreadBps / 2 },
+      costContextFromOkxTakerFee(fee.takerRate, feature.spreadBps),
       { opportunityScoreThreshold: this.config.risk.opportunityScoreThreshold,
         minEdgeCostRatio: this.config.risk.minEdgeCostRatio, maxDataAgeMs: this.config.risk.maxDataAgeMs });
     return { symbol, feature, regime: transition.decision, nextRegimeState: transition.nextState, candidate, fee };

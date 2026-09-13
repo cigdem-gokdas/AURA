@@ -54,7 +54,7 @@ function allowedOrigin(request: IncomingMessage): boolean {
   }
 }
 
-/** Independent read-only process: no client, engine, or agent reference. */
+/** Read-only transport: no trading client, execution engine, or agent reference. */
 export class DashboardServer {
   private readonly http: HttpServer;
   private readonly sockets = new WebSocketServer({ noServer: true });

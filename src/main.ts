@@ -5,6 +5,7 @@ import { AgentRecoveryStore } from './agent/recovery.js';
 import { agentControlPath, sendAgentControl, startAgentControl } from './agent/control.js';
 import { DemoSmokeRecoveryStore } from './agent/demo-smoke-recovery.js';
 import { OkxExecutionEngine } from './execution/engine.js';
+import { DashboardServer, type DashboardServerOptions } from './dashboard/server.js';
 import { createLlmClient } from './llm/openai.js';
 import { OkxMarketAdapter } from './market/okx-market-adapter.js';
 import { AtkReadClient, AtkWriteClient } from './okx/lanes.js';
@@ -13,6 +14,26 @@ import { publishJudgeSnapshot } from './status-mcp/bridge.js';
 
 export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'attached-protection-smoke'
   | 'run' | 'kill' | 'disarm';
+
+export function dashboardOptionsFromEnv(env: NodeJS.ProcessEnv): DashboardServerOptions {
+  return { statusPath: env.AURA_STATUS_SNAPSHOT_PATH ?? '.aura/status.json',
+    auditPath: env.AURA_AUDIT_PATH ?? '.aura/audit.jsonl',
+    ...(env.AURA_DASHBOARD_PORT ? { port: Number(env.AURA_DASHBOARD_PORT) } : {}) };
+}
+
+/** Dashboard reads only the passive snapshot/audit bridge; no trading port is supplied. */
+export async function startRunDashboard(env: NodeJS.ProcessEnv,
+  server = new DashboardServer(dashboardOptionsFromEnv(env))): Promise<{
+    server: DashboardServer; url: string; websocketUrl: string;
+  }> {
+  try {
+    const endpoints = await server.start();
+    return { server, ...endpoints };
+  } catch (error) {
+    await server.close();
+    throw error;
+  }
+}
 
 /** Two independent MCP stdio processes: read-only evidence and spot execution. */
 export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
@@ -103,17 +124,22 @@ export async function main(command: string | undefined = process.argv[2], env: N
     const report = await agent.preflight();
     printReport(report);
     if (!report.passed || !agent.activate()) { await agent.shutdown(); await closeAudit(); return 1; }
+    let dashboard: Awaited<ReturnType<typeof startRunDashboard>>;
+    try { dashboard = await startRunDashboard(env); }
+    catch (error) { await agent.shutdown(); await closeAudit(); throw error; }
     let closeControl: () => Promise<void>;
     try { closeControl = await startAgentControl(agentControlPath(env), control => {
       if (control === 'KILL') agent.engageKillSwitch();
       else agent.disarmEntries();
     }); }
-    catch (error) { await agent.shutdown(); await closeAudit(); throw error; }
+    catch (error) { await dashboard.server.close(); await agent.shutdown(); await closeAudit(); throw error; }
+    process.stdout.write(`AURA dashboard: ${dashboard.url}\nAURA dashboard stream: ${dashboard.websocketUrl}\n`);
     let stopping = false;
     const stop = (): void => {
       if (stopping) return;
       stopping = true;
-      void closeControl().then(() => agent.shutdown()).then(closeAudit).then(() => { process.exitCode = 0; })
+      void closeControl().then(() => agent.shutdown()).then(() => dashboard.server.close())
+        .then(closeAudit).then(() => { process.exitCode = 0; })
         .catch(error => { process.stderr.write(`AURA shutdown failed: ${error instanceof Error ? error.message : 'Unknown error'}\n`);
           process.exitCode = 1; });
     };

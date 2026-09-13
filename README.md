@@ -22,6 +22,8 @@ To start live trading, the launch environment must explicitly contain **both** r
 OKX_PROFILE=live LIVE_TRADING_ARMED=true npm run agent:run
 ```
 
+`agent:run` builds and starts the read-only dashboard before the trading loops. It logs `AURA dashboard: http://127.0.0.1:8787` and `AURA dashboard stream: ws://127.0.0.1:8787/stream` by default. Set `AURA_DASHBOARD_PORT` to use another loopback port. If the dashboard cannot bind, the agent does not start its trading loops.
+
 From a second terminal in this project directory, disarm new entries while leaving existing protective monitoring active:
 
 ```sh
