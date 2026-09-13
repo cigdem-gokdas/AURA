@@ -66,7 +66,10 @@ export class ReadOnlyExplainService {
         break;
       case 'WHY_REJECTED':
         text = state.reasoning.riskCertificate?.verdict === 'REJECT'
-          ? `Risk rejected the proposal: ${state.reasoning.riskCertificate.gates.filter(gate => gate.status === 'FAIL').map(gate => gate.name).join(', ')}.`
+          ? `Risk rejected the proposal: ${state.atk.latestProvenance?.summary?.primaryRejectionReason
+            ?? state.reasoning.riskCertificate.gates.find(gate => gate.status === 'FAIL')?.reason
+            ?? 'Reason unavailable'}. Failed gates: ${state.reasoning.riskCertificate.gates
+              .filter(gate => gate.status === 'FAIL').map(gate => gate.name).join(', ')}.`
           : state.reasoning.criticVerdict && state.reasoning.criticVerdict !== 'AGREE'
             ? `The Market Critic returned ${state.reasoning.criticVerdict}.` : 'The latest cycle has no recorded rejection.';
         break;

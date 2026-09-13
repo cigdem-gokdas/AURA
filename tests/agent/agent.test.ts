@@ -470,14 +470,50 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
+  it('attributes downstream freshness rejection to an earlier critic timeout without changing hard gates', async () => {
+    const h = harness();
+    let clock = NOW;
+    const events: AuditEvent[] = [];
+    vi.mocked(h.llm.evaluateSelectedCandidate).mockImplementationOnce(async () => {
+      clock = NOW + 11_000;
+      return { status: 'TIMEOUT', latencyMs: 3_012 };
+    });
+    const agent = new AuraAgent(agentConfigFromEnv(env()), {
+      connector: h.connector, market: h.market, execution: h.execution, llm: h.llm,
+      now: () => clock, audit: event => { events.push(event); },
+      evaluateSymbol: async symbol => evaluation(symbol, 80),
+    });
+    try {
+      expect((await agent.preflight()).passed).toBe(true);
+      expect(agent.activate()).toBe(true);
+      const result = await agent.runSlowCycle();
+      expect(result).toMatchObject({ status: 'REJECTED', reason: 'Market Critic timeout after 3012ms' });
+      const judge = agent.getJudgeSnapshot();
+      expect(judge?.reasoning.riskCertificate?.gates.filter(gate => gate.status === 'FAIL').map(gate => gate.name))
+        .toEqual(expect.arrayContaining(['DATA_FRESH', 'LLM_REACHABLE']));
+      expect(judge?.atk.latestProvenance?.summary?.primaryRejectionReason)
+        .toBe('Market Critic timeout after 3012ms');
+      expect(agent.explainCurrentState('WHY_REJECTED').text).toContain('Market Critic timeout after 3012ms');
+      expect(events.find(event => event.eventType === 'MARKET_CRITIC_RESULT')?.payload)
+        .toMatchObject({ status: 'TIMEOUT', latencyMs: 3012, reason: 'Market Critic timeout after 3012ms' });
+      expect(events.find(event => event.eventType === 'DECISION_PROVENANCE')?.payload)
+        .toMatchObject({ summary: { primaryRejectionReason: 'Market Critic timeout after 3012ms' } });
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    } finally { await agent.shutdown(); }
+  });
+
   it('publishes an accepted order cycle with its risk certificate', async () => {
     const snapshots: ObserverSnapshot[] = [];
-    const h = harness({ observer: snapshot => { snapshots.push(snapshot); } });
+    const events: AuditEvent[] = [];
+    const h = harness({ observer: snapshot => { snapshots.push(snapshot); },
+      audit: event => { events.push(event); } });
     await h.agent.preflight(); h.agent.activate();
     expect((await h.agent.runSlowCycle()).status).toBe('SUBMITTED');
     expect(snapshots.at(-1)?.riskCertificate?.verdict).toBe('ALLOW');
     expect(snapshots.at(-1)?.llm?.action).toBe('AGREE');
     expect(snapshots.at(-1)?.equity?.current).toBe(10_000);
+    expect(events.find(event => event.eventType === 'MARKET_CRITIC_RESULT')?.payload)
+      .toMatchObject({ status: 'SUCCESS', latencyMs: 1 });
     const judge = h.agent.getJudgeSnapshot();
     expect(judge?.reasoning.selectedSymbol).toBe('BTC-USDT');
     expect(judge?.reasoning.criticVerdict).toBe('AGREE');

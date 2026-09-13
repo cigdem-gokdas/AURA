@@ -1187,14 +1187,22 @@ export class AuraAgent {
           indicatorCrossChecks: this.lastIndicatorChecks,
           atkCrossMarket: this.lastPairContext,
           contextPulse: this.lastPulse });
+        const criticLatencyMs = typeof this.latestLlm.latencyMs === 'number'
+          && Number.isFinite(this.latestLlm.latencyMs) && this.latestLlm.latencyMs >= 0
+          ? Math.round(this.latestLlm.latencyMs) : null;
+        const criticTimeoutReason = this.latestLlm.status === 'TIMEOUT'
+          ? `Market Critic timeout${criticLatencyMs === null ? '' : ` after ${criticLatencyMs}ms`}` : null;
         this.audit('MARKET_CRITIC_RESULT', this.latestLlm.status === 'SUCCESS'
           ? { status: this.latestLlm.status, verdict: this.latestLlm.decision.action,
             counter_thesis: this.latestLlm.decision.counter_thesis,
             riskFlag: this.latestLlm.decision.risk_flag,
-            setupQuality: this.latestLlm.decision.setup_quality }
-          : { status: this.latestLlm.status }, { cycleId: provenanceCycleId, symbol: selected.symbol });
+            setupQuality: this.latestLlm.decision.setup_quality, latencyMs: criticLatencyMs }
+          : { status: this.latestLlm.status, latencyMs: criticLatencyMs,
+            ...(criticTimeoutReason ? { reason: criticTimeoutReason } : {}) },
+          { cycleId: provenanceCycleId, symbol: selected.symbol });
         this.node('LLM', 'Market Critic reviewed selected candidate', selected.symbol,
-          this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.action : this.latestLlm.status,
+          this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.action
+            : criticTimeoutReason ?? this.latestLlm.status,
           this.latestLlm.status === 'SUCCESS');
         const balance = await this.deps.market.getTradingBalanceSnapshot();
         const exchangeAtRisk = await this.deps.execution.getStartupSnapshot();
@@ -1272,7 +1280,10 @@ export class AuraAgent {
           this.monitor?.recordDecision({ symbol: selected.symbol, setupType: selected.setupType,
             regime: selected.regime, resultCategory: this.latestLlm.status === 'SUCCESS' ? 'REJECTED_RISK' : 'REJECTED_LLM',
             outcomeR: null, stopHit: null, timestamp: this.now() });
-          return finish({ status: 'REJECTED', selectedSymbol: selected.symbol, reason: risk.decision.reason });
+          const primaryReason = criticTimeoutReason &&
+            (risk.decision.rejectionCategory === 'DATA_FRESH' || risk.decision.rejectionCategory === 'LLM_REACHABLE')
+            ? criticTimeoutReason : risk.decision.reason;
+          return finish({ status: 'REJECTED', selectedSymbol: selected.symbol, reason: primaryReason });
         }
         if (risk.certificate.verdict !== 'ALLOW' || !risk.plan)
           return finish({ status: 'BLOCKED', selectedSymbol: selected.symbol, reason: 'Risk certificate did not allow' });
