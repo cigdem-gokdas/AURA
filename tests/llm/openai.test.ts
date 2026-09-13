@@ -81,6 +81,9 @@ describe('OpenAI market critic', () => {
     expect(body.text.format.type).toBe('json_schema');
     expect(body.text.format.strict).toBe(true);
     expect(body.text.format.schema.additionalProperties).toBe(false);
+    expect(body.instructions).toContain('reason must be at most 280 characters, counter_thesis at most 180 characters');
+    expect(body.instructions).toContain('count carefully, this is a hard limit, brevity over completeness');
+    expect(body.instructions).toContain('Example: reason:');
     expect(Object.keys(body.text.format.schema.properties).sort()).toEqual(Object.keys(baseDecision).sort());
     expect(body).not.toHaveProperty('tools');
     expect(JSON.stringify(body)).not.toContain('top-secret-key');
@@ -104,11 +107,72 @@ describe('OpenAI market critic', () => {
     for (const decision of [
       { ...baseDecision, replacementSymbol: 'ETH-USDT' },
       { ...baseDecision, confidence: 1.2 },
-      { ...baseDecision, reason: 'x'.repeat(281) },
       { ...baseDecision, reason: 'Trade ETH-USDT instead' },
     ]) {
       const { client } = mockedClient(response(decision));
       expect((await client.evaluateSelectedCandidate(context())).status).toBe('SCHEMA_INVALID');
+    }
+  });
+
+  it('truncates only overlong prose before Zod while preserving action and risk flag', async () => {
+    const { client } = mockedClient(response({ ...baseDecision, action: 'ABSTAIN', risk_flag: 'HIGH',
+      reason: 'R'.repeat(421), counter_thesis: 'C'.repeat(241) }));
+    const result = await client.evaluateSelectedCandidate(context());
+    expect(result.status).toBe('SUCCESS');
+    if (result.status !== 'SUCCESS') throw new Error('Expected valid decision');
+    expect(result.decision.action).toBe('ABSTAIN');
+    expect(result.decision.risk_flag).toBe('HIGH');
+    expect(result.decision.reason).toHaveLength(280);
+    expect(result.decision.counter_thesis).toHaveLength(180);
+    expect(result.decision.reason.endsWith('...')).toBe(true);
+    expect(result.decision.counter_thesis.endsWith('...')).toBe(true);
+    expect(result.proseTruncations).toEqual([
+      { field: 'reason', originalLength: 421, truncatedLength: 280 },
+      { field: 'counter_thesis', originalLength: 241, truncatedLength: 180 },
+    ]);
+  });
+
+  it.each([
+    { action: 'BUY' }, { confidence: 1.2 }, { regime_confirmation: 'SIDEWAYS' },
+    { risk_flag: 'SEVERE' }, { setup_quality: 'E' }, { memory_signal: 'UNKNOWN' },
+  ])('still rejects invalid non-prose fields after prose normalization: %o', async invalid => {
+    const result = await mockedClient(response({ ...baseDecision, reason: 'Short reason', ...invalid }))
+      .client.evaluateSelectedCandidate(context());
+    expect(result.status).toBe('SCHEMA_INVALID');
+    if (result.status === 'SCHEMA_INVALID') expect(result.validationSource).toBe('ZOD');
+  });
+
+  it('checks the untruncated text for forbidden other-symbol recommendations', async () => {
+    const result = await mockedClient(response({ ...baseDecision,
+      reason: `${'R'.repeat(281)} Trade ETH-USDT instead` }))
+      .client.evaluateSelectedCandidate(context());
+    expect(result).toMatchObject({ status: 'SCHEMA_INVALID',
+      validationSource: 'OTHER_SYMBOL_RECOMMENDATION' });
+  });
+
+  it('returns bounded raw text and exact field diagnostics for a Zod failure', async () => {
+    const invalid = { ...baseDecision, confidence: 'high' };
+    const raw = JSON.stringify(invalid);
+    const { client } = mockedClient(response(invalid));
+    const result = await client.evaluateSelectedCandidate(context());
+    expect(result).toMatchObject({ status: 'SCHEMA_INVALID', rawResponse: raw,
+      validationSource: 'ZOD', validationIssueCount: 1,
+      validationIssues: [{ path: ['confidence'], code: 'invalid_type',
+        expected: 'number', received: '"high"' }] });
+    if (result.status !== 'SCHEMA_INVALID') throw new Error('Expected schema failure');
+    expect(result.validationIssues?.[0]?.message).toContain('expected number, received string');
+
+    const oversized = { ...baseDecision, confidence: 'high', reason: 'x'.repeat(3_000) };
+    const oversizedResult = await mockedClient(response(oversized)).client.evaluateSelectedCandidate(context());
+    expect(oversizedResult.status).toBe('SCHEMA_INVALID');
+    if (oversizedResult.status === 'SCHEMA_INVALID') expect(oversizedResult.rawResponse?.length).toBe(2_000);
+
+    const secretBearing = { ...baseDecision, confidence: 'high', reason: 'top-secret-key is not model evidence' };
+    const secretResult = await mockedClient(response(secretBearing)).client.evaluateSelectedCandidate(context());
+    expect(secretResult.status).toBe('SCHEMA_INVALID');
+    if (secretResult.status === 'SCHEMA_INVALID') {
+      expect(secretResult.rawResponse).toContain('[REDACTED]');
+      expect(secretResult.rawResponse).not.toContain('top-secret-key');
     }
   });
 

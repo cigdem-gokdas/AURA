@@ -3,7 +3,9 @@ import { AuraAgent, type AgentDependencies, type ObserverSnapshot, type SymbolEv
 import { agentConfigFromEnv, parseSymbols } from '../../src/agent/config.js';
 import type { ExecutionEngine, StartupExchangeSnapshot } from '../../src/execution/types.js';
 import type { FeatureSnapshot } from '../../src/features/types.js';
-import type { LlmClient } from '../../src/llm/types.js';
+import type { LlmClient, LlmDecisionStatus } from '../../src/llm/types.js';
+import { OpenAiLlmClient } from '../../src/llm/openai.js';
+import { openAiConfigFromEnv } from '../../src/llm/config.js';
 import type { MarketAdapter, RecentSpotFill } from '../../src/market/types.js';
 import type { OkxConnector } from '../../src/okx/connector.js';
 import type { ApprovedOrderPlan, ProtectionPlan } from '../../src/risk/types.js';
@@ -500,6 +502,104 @@ describe('AURA orchestration', () => {
         .toMatchObject({ summary: { primaryRejectionReason: 'Market Critic timeout after 3012ms' } });
       expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
     } finally { await agent.shutdown(); }
+  });
+
+  it.each([
+    ['SCHEMA_INVALID', 'response failed validation'],
+    ['UNREACHABLE', 'unreachable'],
+    ['HTTP_ERROR', 'HTTP error'],
+    ['MALFORMED_RESPONSE', 'malformed response'],
+    ['CONFIG_ERROR', 'configuration error'],
+    ['BUDGET_EXCEEDED', 'budget exceeded'],
+  ] satisfies [Exclude<LlmDecisionStatus, 'SUCCESS' | 'TIMEOUT'>, string][])(
+    'attributes downstream freshness rejection to critic %s', async (status, label) => {
+      const h = harness();
+      let clock = NOW;
+      const events: AuditEvent[] = [];
+      vi.mocked(h.llm.evaluateSelectedCandidate).mockImplementationOnce(async () => {
+        clock = NOW + 11_000;
+        return { status, latencyMs: 4_472 };
+      });
+      const agent = new AuraAgent(agentConfigFromEnv(env()), {
+        connector: h.connector, market: h.market, execution: h.execution, llm: h.llm,
+        now: () => clock, audit: event => { events.push(event); },
+        evaluateSymbol: async symbol => evaluation(symbol, 80),
+      });
+      try {
+        expect((await agent.preflight()).passed).toBe(true);
+        expect(agent.activate()).toBe(true);
+        const reason = `Market Critic ${label} after 4472ms`;
+        expect(await agent.runSlowCycle()).toMatchObject({ status: 'REJECTED', reason });
+        expect(agent.getJudgeSnapshot()?.reasoning.riskCertificate?.gates
+          .filter(gate => gate.status === 'FAIL').map(gate => gate.name))
+          .toEqual(expect.arrayContaining(['DATA_FRESH', 'LLM_REACHABLE']));
+        expect(agent.getJudgeSnapshot()?.atk.latestProvenance?.summary?.primaryRejectionReason).toBe(reason);
+        expect(events.find(event => event.eventType === 'MARKET_CRITIC_RESULT')?.payload)
+          .toMatchObject({ status, latencyMs: 4472, reason });
+        expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+      } finally { await agent.shutdown(); }
+    },
+  );
+
+  it('writes raw out-of-schema model text and the exact Zod field error to the audit trail', async () => {
+    const h = harness();
+    const directory = await mkdtemp(join(tmpdir(), 'aura-critic-schema-'));
+    const audit = await AuditLog.open(join(directory, 'audit.jsonl'));
+    const invalid = { action: 'AGREE', confidence: 'high', regime_confirmation: 'TRENDING_UP',
+      setup_quality: 'A', risk_flag: 'LOW', reason: 'The setup is coherent',
+      counter_thesis: 'Momentum may fade', memory_signal: 'NONE' };
+    const raw = JSON.stringify(invalid);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ status: 'completed',
+      output: [{ type: 'message', content: [{ type: 'output_text', text: raw }] }],
+      usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 } })));
+    const llm = new OpenAiLlmClient(openAiConfigFromEnv({ ...env(), OPENAI_API_KEY: 'audit-test-secret' }),
+      { fetchImpl: fetchImpl as unknown as typeof fetch, now: () => NOW });
+    const agent = new AuraAgent(agentConfigFromEnv(env()), {
+      connector: h.connector, market: h.market, execution: h.execution, llm,
+      now: () => NOW, audit: event => audit.append(event).then(() => undefined),
+      evaluateSymbol: async symbol => evaluation(symbol, 80),
+    });
+    try {
+      expect((await agent.preflight()).passed).toBe(true);
+      expect(agent.activate()).toBe(true);
+      expect(await agent.runSlowCycle()).toMatchObject({ status: 'REJECTED',
+        reason: 'Market Critic response failed validation after 0ms' });
+      await audit.flush();
+      const lines = (await readFile(audit.path, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+      const critic = lines.find(line => line.eventType === 'MARKET_CRITIC_RESULT');
+      expect(critic).toMatchObject({ symbol: 'BTC-USDT', payload: {
+        status: 'SCHEMA_INVALID', rawResponse: raw, validationSource: 'ZOD', validationIssueCount: 1,
+        validationIssues: [{ path: ['confidence'], code: 'invalid_type',
+          expected: 'number', received: '"high"' }],
+      } });
+      expect(critic.payload.validationIssues[0].message).toContain('expected number, received string');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    } finally {
+      await agent.shutdown();
+      await audit.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('audits prose truncation without changing the critic action or risk flag', async () => {
+    const events: AuditEvent[] = [];
+    const h = harness({ armed: false, audit: event => { events.push(event); } });
+    vi.mocked(h.llm.evaluateSelectedCandidate).mockResolvedValueOnce({ status: 'SUCCESS',
+      decision: { action: 'ABSTAIN', confidence: 0.8, regime_confirmation: 'TRENDING_UP',
+        setup_quality: 'C', risk_flag: 'HIGH', reason: 'Brief caution...', counter_thesis: 'Could reverse',
+        memory_signal: 'NONE' }, latencyMs: 3,
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCostUsd: 0 },
+      proseTruncations: [{ field: 'reason', originalLength: 421, truncatedLength: 280 }] });
+    try {
+      expect((await h.agent.preflight()).passed).toBe(true);
+      expect(h.agent.state).toBe('OBSERVE_ONLY');
+      expect((await h.agent.runSlowCycle()).status).toBe('REJECTED');
+      expect(events.find(event => event.eventType === 'MARKET_CRITIC_RESULT')?.payload)
+        .toMatchObject({ status: 'SUCCESS', verdict: 'ABSTAIN', riskFlag: 'HIGH',
+          proseTruncations: [{ field: 'reason', originalLength: 421, truncatedLength: 280 }] });
+      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    } finally { await h.agent.shutdown(); }
   });
 
   it('publishes an accepted order cycle with its risk certificate', async () => {

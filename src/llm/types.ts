@@ -76,11 +76,31 @@ export type LlmDecisionStatus =
   | 'CONFIG_ERROR'
   | 'BUDGET_EXCEEDED';
 
+export interface LlmValidationIssue {
+  path: readonly (string | number)[];
+  code: string;
+  message: string;
+  expected: string;
+  received: string;
+}
+
+export interface LlmProseTruncation {
+  field: 'reason' | 'counter_thesis';
+  originalLength: number;
+  truncatedLength: number;
+}
+
 export type LlmDecisionResult =
-  | { status: 'SUCCESS'; decision: LlmDecision; latencyMs: number; usage: LlmTokenUsage }
+  | { status: 'SUCCESS'; decision: LlmDecision; latencyMs: number; usage: LlmTokenUsage;
+      proseTruncations?: readonly LlmProseTruncation[] }
   | {
       status: Exclude<LlmDecisionStatus, 'SUCCESS'>;
       decision?: never;
       error?: string;
       latencyMs?: number;
+      rawResponse?: string;
+      validationSource?: 'ZOD' | 'OTHER_SYMBOL_RECOMMENDATION';
+      validationIssues?: readonly LlmValidationIssue[];
+      validationIssueCount?: number;
+      proseTruncations?: readonly LlmProseTruncation[];
     };

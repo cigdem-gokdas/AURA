@@ -7,7 +7,7 @@ import type { AttachedProtectionLink, DemoSmokeExecutionResult, DemoSmokeRequest
 import { minimumDemoSmokeQuantity } from '../execution/smoke-size.js';
 import { protectionSignatureMatches, protectionTriggers } from '../execution/engine.js';
 import type { RecentSpotFill } from '../market/types.js';
-import type { LlmClient, LlmDecisionResult } from '../llm/types.js';
+import type { LlmClient, LlmDecisionResult, LlmDecisionStatus } from '../llm/types.js';
 import type { MarketAdapter, SpotFeeRate, TradingBalanceSnapshot } from '../market/types.js';
 import { selectLiquidUniverse, type UniverseSelection } from '../market/universe.js';
 import type { AuditEvent, AuditEventType } from '../memory/audit.js';
@@ -36,6 +36,21 @@ import { OwnershipAmbiguityError } from './recovery.js';
 import { selectDemoSmokeMarket } from './demo-smoke.js';
 
 export type AgentState = 'BOOTING' | 'PREFLIGHT' | 'OBSERVE_ONLY' | 'LIVE_READY' | 'LIVE' | 'DEGRADED' | 'HALTED';
+
+const criticFailureLabels: Record<Exclude<LlmDecisionStatus, 'SUCCESS'>, string> = {
+  TIMEOUT: 'timeout',
+  UNREACHABLE: 'unreachable',
+  HTTP_ERROR: 'HTTP error',
+  MALFORMED_RESPONSE: 'malformed response',
+  SCHEMA_INVALID: 'response failed validation',
+  CONFIG_ERROR: 'configuration error',
+  BUDGET_EXCEEDED: 'budget exceeded',
+};
+
+function criticFailureReason(result: LlmDecisionResult, latencyMs: number | null): string | null {
+  if (result.status === 'SUCCESS') return null;
+  return `Market Critic ${criticFailureLabels[result.status]}${latencyMs === null ? '' : ` after ${latencyMs}ms`}`;
+}
 
 export interface SymbolEvaluation {
   symbol: string;
@@ -1190,19 +1205,28 @@ export class AuraAgent {
         const criticLatencyMs = typeof this.latestLlm.latencyMs === 'number'
           && Number.isFinite(this.latestLlm.latencyMs) && this.latestLlm.latencyMs >= 0
           ? Math.round(this.latestLlm.latencyMs) : null;
-        const criticTimeoutReason = this.latestLlm.status === 'TIMEOUT'
-          ? `Market Critic timeout${criticLatencyMs === null ? '' : ` after ${criticLatencyMs}ms`}` : null;
+        const criticReason = criticFailureReason(this.latestLlm, criticLatencyMs);
         this.audit('MARKET_CRITIC_RESULT', this.latestLlm.status === 'SUCCESS'
           ? { status: this.latestLlm.status, verdict: this.latestLlm.decision.action,
             counter_thesis: this.latestLlm.decision.counter_thesis,
             riskFlag: this.latestLlm.decision.risk_flag,
-            setupQuality: this.latestLlm.decision.setup_quality, latencyMs: criticLatencyMs }
+            setupQuality: this.latestLlm.decision.setup_quality, latencyMs: criticLatencyMs,
+            ...(this.latestLlm.proseTruncations?.length
+              ? { proseTruncations: this.latestLlm.proseTruncations } : {}) }
           : { status: this.latestLlm.status, latencyMs: criticLatencyMs,
-            ...(criticTimeoutReason ? { reason: criticTimeoutReason } : {}) },
+            ...(criticReason ? { reason: criticReason } : {}),
+            ...(this.latestLlm.proseTruncations?.length
+              ? { proseTruncations: this.latestLlm.proseTruncations } : {}),
+            ...(this.latestLlm.status === 'SCHEMA_INVALID' ? {
+              rawResponse: this.latestLlm.rawResponse ?? null,
+              validationSource: this.latestLlm.validationSource ?? null,
+              validationIssues: this.latestLlm.validationIssues ?? [],
+              validationIssueCount: this.latestLlm.validationIssueCount ?? 0,
+            } : {}) },
           { cycleId: provenanceCycleId, symbol: selected.symbol });
         this.node('LLM', 'Market Critic reviewed selected candidate', selected.symbol,
           this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.action
-            : criticTimeoutReason ?? this.latestLlm.status,
+            : criticReason ?? this.latestLlm.status,
           this.latestLlm.status === 'SUCCESS');
         const balance = await this.deps.market.getTradingBalanceSnapshot();
         const exchangeAtRisk = await this.deps.execution.getStartupSnapshot();
@@ -1280,9 +1304,9 @@ export class AuraAgent {
           this.monitor?.recordDecision({ symbol: selected.symbol, setupType: selected.setupType,
             regime: selected.regime, resultCategory: this.latestLlm.status === 'SUCCESS' ? 'REJECTED_RISK' : 'REJECTED_LLM',
             outcomeR: null, stopHit: null, timestamp: this.now() });
-          const primaryReason = criticTimeoutReason &&
+          const primaryReason = criticReason &&
             (risk.decision.rejectionCategory === 'DATA_FRESH' || risk.decision.rejectionCategory === 'LLM_REACHABLE')
-            ? criticTimeoutReason : risk.decision.reason;
+            ? criticReason : risk.decision.reason;
           return finish({ status: 'REJECTED', selectedSymbol: selected.symbol, reason: primaryReason });
         }
         if (risk.certificate.verdict !== 'ALLOW' || !risk.plan)

@@ -1,7 +1,8 @@
 import { LlmBudget } from './budget.js';
 import { openAiConfigFromEnv, type OpenAiLlmConfig } from './config.js';
 import { buildSelectedCandidateInput, MARKET_CRITIC_INSTRUCTIONS } from './prompt.js';
-import { LlmDecisionSchema, type LlmClient, type LlmDecisionResult, type SelectedCandidateContext } from './types.js';
+import { LlmDecisionSchema, type LlmClient, type LlmDecisionResult, type LlmProseTruncation,
+  type SelectedCandidateContext } from './types.js';
 
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -63,6 +64,32 @@ function tokenCounts(body: JsonRecord): { input: number; output: number } | null
 function recommendsOtherSymbol(text: string, otherSymbol: string): boolean {
   const escaped = otherSymbol.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\b(?:trade|buy|sell|choose|switch to|prefer)\\s+${escaped}\\b`, 'i').test(text);
+}
+
+function valueAtPath(root: unknown, path: readonly PropertyKey[]): unknown {
+  let value = root;
+  for (const key of path) {
+    if (value === null || typeof value !== 'object') return undefined;
+    value = (value as Record<PropertyKey, unknown>)[key];
+  }
+  return value;
+}
+
+function diagnosticText(value: string, apiKey: string, limit: number): string {
+  return value.replaceAll(apiKey, '[REDACTED]').slice(0, limit);
+}
+
+function receivedText(value: unknown, apiKey: string): string {
+  const serialized = value === undefined ? 'undefined' : JSON.stringify(value) ?? String(value);
+  return diagnosticText(serialized, apiKey, 200);
+}
+
+function truncateProse(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  let prefix = value.slice(0, limit - 3);
+  // Avoid splitting a UTF-16 surrogate pair at the cutoff.
+  if (/[\uD800-\uDBFF]$/.test(prefix)) prefix = prefix.slice(0, -1);
+  return `${prefix}...`;
 }
 
 export interface OpenAiClientDependencies {
@@ -143,10 +170,39 @@ export class OpenAiLlmClient implements LlmClient {
     let parsed: unknown;
     try { parsed = JSON.parse(content); }
     catch { return { status: 'MALFORMED_RESPONSE', latencyMs }; }
-    const decision = LlmDecisionSchema.safeParse(parsed);
-    if (!decision.success) return { status: 'SCHEMA_INVALID', latencyMs };
-    if (recommendsOtherSymbol(`${decision.data.reason} ${decision.data.counter_thesis}`, context.crossMarket.otherSymbol)) return { status: 'SCHEMA_INVALID', latencyMs };
-    return { status: 'SUCCESS', decision: decision.data, latencyMs, usage };
+    const original = object(parsed);
+    const normalized = original ? { ...original } : parsed;
+    const normalizedRecord = object(normalized);
+    const proseTruncations: LlmProseTruncation[] = [];
+    if (original && normalizedRecord) {
+      for (const [field, limit] of [['reason', 280], ['counter_thesis', 180]] as const) {
+        const value = original[field];
+        if (typeof value !== 'string' || value.length <= limit) continue;
+        normalizedRecord[field] = truncateProse(value, limit);
+        proseTruncations.push({ field, originalLength: value.length,
+          truncatedLength: (normalizedRecord[field] as string).length });
+      }
+    }
+    const decision = LlmDecisionSchema.safeParse(normalized);
+    if (!decision.success) return { status: 'SCHEMA_INVALID', latencyMs,
+      ...(proseTruncations.length ? { proseTruncations } : {}),
+      rawResponse: diagnosticText(content, config.apiKey, 2_000), validationSource: 'ZOD',
+      validationIssueCount: decision.error.issues.length,
+      validationIssues: decision.error.issues.slice(0, 16).map(issue => ({
+        path: issue.path.map(key => typeof key === 'number' ? key : String(key)).slice(0, 8),
+        code: issue.code,
+        message: diagnosticText(issue.message, config.apiKey, 500),
+        expected: diagnosticText('expected' in issue ? String(issue.expected) : issue.message, config.apiKey, 500),
+        received: receivedText(valueAtPath(parsed, issue.path), config.apiKey),
+      })) };
+    if (recommendsOtherSymbol(`${original?.reason ?? ''} ${original?.counter_thesis ?? ''}`,
+      context.crossMarket.otherSymbol))
+      return { status: 'SCHEMA_INVALID', latencyMs,
+        ...(proseTruncations.length ? { proseTruncations } : {}),
+        rawResponse: diagnosticText(content, config.apiKey, 2_000),
+        validationSource: 'OTHER_SYMBOL_RECOMMENDATION', validationIssueCount: 0, validationIssues: [] };
+    return { status: 'SUCCESS', decision: decision.data, latencyMs, usage,
+      ...(proseTruncations.length ? { proseTruncations } : {}) };
   }
 }
 
