@@ -14,6 +14,8 @@ export interface DashboardState {
   snapshot: JudgeSnapshot | null;
   equityHistory: readonly EquityPoint[];
   critic: { setupQuality: 'A' | 'B' | 'C' | 'D' | null };
+  /** Matching LOCKDOWN event for the snapshot's decision cycle was found in the audit log. */
+  lockdownAuditConfirmed: boolean;
   bridgeStatus: 'READY' | 'OFFLINE';
   receivedAt: number | null;
 }

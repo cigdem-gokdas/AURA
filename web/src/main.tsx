@@ -22,6 +22,7 @@ const empty: DashboardState = {
   snapshot: null,
   equityHistory: [],
   critic: { setupQuality: null },
+  lockdownAuditConfirmed: false,
   bridgeStatus: 'OFFLINE',
   receivedAt: null,
 };
@@ -153,7 +154,9 @@ function CardMetric({
     </article>
   );
 }
-function Banner({ s }: { s: JudgeSnapshot | null }) {
+export function Banner({ s, lockdownAuditConfirmed = false }: {
+  s: JudgeSnapshot | null; lockdownAuditConfirmed?: boolean;
+}) {
   if (!s)
     return (
       <div className="banner observe">
@@ -168,7 +171,14 @@ function Banner({ s }: { s: JudgeSnapshot | null }) {
         <span>New entries blocked · Reconciling through ATK MCP</span>
       </div>
     );
-  if (s.functional.state === 'HALTED' || s.safety.riskMode === 'LOCKDOWN')
+  if (s.functional.state === 'HALTED')
+    return (
+      <div className="banner observe">
+        <strong>AGENT STOPPED</strong>
+        <span>Waiting for the next intentional start</span>
+      </div>
+    );
+  if (s.safety.riskMode === 'LOCKDOWN' && lockdownAuditConfirmed)
     return (
       <div className="banner danger">
         <strong>RISK LOCKDOWN</strong>
@@ -180,6 +190,20 @@ function Banner({ s }: { s: JudgeSnapshot | null }) {
       <div className="banner warning">
         <strong>DEGRADED MODE</strong>
         <span>New entries disabled · Position protection active</span>
+      </div>
+    );
+  if (s.safety.riskMode === 'LOCKDOWN')
+    return (
+      <div className="banner warning">
+        <strong>RISK EVIDENCE UNAVAILABLE</strong>
+        <span>Risk state needs audit verification</span>
+      </div>
+    );
+  if (s.safety.riskMode === null)
+    return (
+      <div className="banner observe">
+        <strong>AWAITING FIRST RISK EVALUATION</strong>
+        <span>No risk decision has been recorded yet</span>
       </div>
     );
   if (
@@ -1192,7 +1216,8 @@ function App() {
           <Pill tone={data.bridgeStatus === 'READY' ? 'good' : 'bad'}>
             STATUS MCP {data.bridgeStatus}
           </Pill>
-          <Pill>RISK {label(s?.safety.riskMode)}</Pill>
+          <Pill>RISK {s?.safety.riskMode === 'LOCKDOWN' && !data.lockdownAuditConfirmed
+            ? 'UNVERIFIED' : s?.safety.riskMode ? label(s.safety.riskMode) : 'AWAITING FIRST EVALUATION'}</Pill>
           <Pill>PROTECTION {label(s?.safety.protectionMode)}</Pill>
         </div>
         {s && (!connected || data.bridgeStatus === 'OFFLINE') && (
@@ -1204,7 +1229,7 @@ function App() {
             </span>
           </div>
         )}
-        <Banner s={s} />
+        <Banner s={s} lockdownAuditConfirmed={data.lockdownAuditConfirmed} />
         <div className="overview-title">
           <div>
             <span className="eyebrow">AT A GLANCE</span>

@@ -353,11 +353,11 @@ export class AuraAgent {
   private check(checks: { name: string; passed: boolean; detail: string }[], name: string,
     passed: boolean, detail: string): void { checks.push({ name, passed, detail }); }
 
-  /** Waits out a few milliseconds of measured exchange/local clock skew instead of accepting future data. */
+  /** Wait out bounded exchange/local clock skew; feature validation still rejects future or stale data. */
   private async settleClockSkew(timestamp: number): Promise<number> {
     const now = this.now();
     const futureMs = timestamp - now;
-    if (futureMs > 0 && futureMs <= 100) {
+    if (futureMs > 0 && futureMs <= 2_000) {
       await new Promise<void>(resolve => setTimeout(resolve, futureMs + 1));
       return this.now();
     }
@@ -576,7 +576,7 @@ export class AuraAgent {
       this.audit('ATK_MCP_HEALTH', { readLane: readLaneReport, writeLane: writeLaneReport });
       this.audit('STATE_TRANSITION', { state: this.stateValue });
       this.auditNewMcpTraces();
-      if (this.unmanagedInventory.length) await this.publish();
+      await this.publish();
       return report;
     } catch (error) {
       this.mcpHealthy = false;
@@ -612,7 +612,7 @@ export class AuraAgent {
       this.audit('ERROR', { stage: 'PREFLIGHT', reason: detail });
       this.audit('ATK_MCP_HEALTH', { readLane: readLaneReport, writeLane: writeLaneReport });
       this.auditNewMcpTraces();
-      if (this.unmanagedInventory.length || this.ownershipReconciliationPending) await this.publish();
+      await this.publish();
       return report;
     }
   }
@@ -634,8 +634,8 @@ export class AuraAgent {
       this.deps.market.getOrderBook(symbol, 5),
       this.deps.market.getSpotFeeRate(symbol),
     ]);
-    // A small measured exchange/local clock skew can put a fresh ATK book a
-    // few milliseconds in the future. Wait for local time to catch up rather
+    // A bounded measured exchange/local clock skew can put a fresh ATK book
+    // briefly in the future. Wait for local time to catch up rather
     // than accepting future data or changing the stale-data limit.
     const evaluationTime = await this.settleClockSkew(book.timestamp);
     const barMs = 180_000;
@@ -1775,7 +1775,7 @@ export class AuraAgent {
         unmanagedInventory: this.unmanagedInventory.map(position => ({ ...position })) };
       this.lastSnapshot = structuredClone(snapshot);
       const observing = this.deps.observer?.(structuredClone(snapshot));
-      if (observing) void Promise.resolve(observing).catch(() => undefined);
+      if (observing) await Promise.resolve(observing).catch(() => undefined);
     } catch { /* The observer is never a decision authority. */ }
   }
 }

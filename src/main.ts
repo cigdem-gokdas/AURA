@@ -18,6 +18,8 @@ export type AgentCommand = 'preflight' | 'calibrate' | 'demo-smoke' | 'attached-
 export function dashboardOptionsFromEnv(env: NodeJS.ProcessEnv): DashboardServerOptions {
   return { statusPath: env.AURA_STATUS_SNAPSHOT_PATH ?? '.aura/status.json',
     auditPath: env.AURA_AUDIT_PATH ?? '.aura/audit.jsonl',
+    ...(env.AURA_DASHBOARD_ALLOWED_HOSTS
+      ? { allowedHosts: env.AURA_DASHBOARD_ALLOWED_HOSTS } : {}),
     ...(env.AURA_DASHBOARD_PORT ? { port: Number(env.AURA_DASHBOARD_PORT) } : {}) };
 }
 
@@ -58,6 +60,7 @@ export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
       if (!snapshot) return;
       statusQueue = statusQueue.then(() => publishJudgeSnapshot(observability.statusPath!, snapshot))
         .catch(error => { process.stderr.write(`AURA status publication failed: ${error instanceof Error ? error.message : 'Unknown error'}\n`); });
+      return statusQueue;
     } } : {}),
     startupContext: async (snapshot, references) => {
       await smokeRecovery.assertClear();

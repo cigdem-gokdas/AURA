@@ -20,6 +20,7 @@ export interface DashboardServerOptions {
   port?: number;
   pollMs?: number;
   historyLimit?: number;
+  allowedHosts?: string;
 }
 
 const defaultStaticRoot = fileURLToPath(
@@ -35,20 +36,26 @@ const contentTypes: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-function allowedHost(request: IncomingMessage): boolean {
-  const hostname = request.headers.host?.split(':')[0];
-  return hostname === '127.0.0.1' || hostname === 'localhost';
+function parseAllowedHosts(value: string): ReadonlySet<string> {
+  const hosts = value.split(',').map(host => host.trim().toLowerCase());
+  if (hosts.some(host => host.length > 253 || host.split('.').some(label =>
+    !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))))
+    throw new RangeError('Invalid dashboard allowed host');
+  return new Set(hosts);
 }
 
-function allowedOrigin(request: IncomingMessage): boolean {
+function allowedHost(request: IncomingMessage, hosts: ReadonlySet<string>): boolean {
+  const hostname = request.headers.host?.match(/^([a-z0-9.-]+)(?::\d{1,5})?$/i)?.[1];
+  return !!hostname && hosts.has(hostname.toLowerCase());
+}
+
+function allowedOrigin(request: IncomingMessage, hosts: ReadonlySet<string>): boolean {
   const origin = request.headers.origin;
   if (!origin) return true;
   try {
     const url = new URL(origin);
-    return (
-      (url.hostname === '127.0.0.1' || url.hostname === 'localhost') &&
-      (url.protocol === 'http:' || url.protocol === 'https:')
-    );
+    return hosts.has(url.hostname.toLowerCase()) &&
+      (url.protocol === 'http:' || url.protocol === 'https:');
   } catch {
     return false;
   }
@@ -63,6 +70,7 @@ export class DashboardServer {
   private readonly staticRoot: string;
   private readonly pollMs: number;
   private readonly historyLimit: number;
+  private readonly allowedHosts: ReadonlySet<string>;
   private interval: ReturnType<typeof setInterval> | null = null;
   private busy = false;
   private fingerprint = '';
@@ -70,6 +78,7 @@ export class DashboardServer {
     snapshot: null,
     equityHistory: [],
     critic: { setupQuality: null },
+    lockdownAuditConfirmed: false,
     bridgeStatus: 'OFFLINE',
     receivedAt: null,
   };
@@ -80,6 +89,7 @@ export class DashboardServer {
     this.staticRoot = resolve(options.staticRoot ?? defaultStaticRoot);
     this.pollMs = options.pollMs ?? 1_000;
     this.historyLimit = options.historyLimit ?? 360;
+    this.allowedHosts = parseAllowedHosts(options.allowedHosts ?? 'localhost,127.0.0.1');
     if (!Number.isSafeInteger(this.pollMs) || this.pollMs < 10)
       throw new RangeError('Invalid poll interval');
     if (
@@ -89,7 +99,7 @@ export class DashboardServer {
     )
       throw new RangeError('Invalid history limit');
     this.http = createServer((request, response) => {
-      if (!allowedHost(request)) {
+      if (!allowedHost(request, this.allowedHosts)) {
         response.writeHead(403).end();
         return;
       }
@@ -111,8 +121,8 @@ export class DashboardServer {
     this.http.on('upgrade', (request, socket, head) => {
       if (
         request.url !== '/stream' ||
-        !allowedHost(request) ||
-        !allowedOrigin(request)
+        !allowedHost(request, this.allowedHosts) ||
+        !allowedOrigin(request, this.allowedHosts)
       ) {
         socket.destroy();
         return;
@@ -170,7 +180,8 @@ export class DashboardServer {
       }
       const snapshot = redactAudit(raw) as JudgeSnapshot;
       const critic = { setupQuality: await this.latestSetupQuality(snapshot) };
-      const fingerprint = JSON.stringify([snapshot, critic]);
+      const lockdownAuditConfirmed = await this.lockdownEvidence(snapshot);
+      const fingerprint = JSON.stringify([snapshot, critic, lockdownAuditConfirmed]);
       if (
         fingerprint === this.fingerprint &&
         this.state.bridgeStatus === 'READY'
@@ -203,6 +214,7 @@ export class DashboardServer {
           snapshot,
           equityHistory: history.slice(-this.historyLimit),
           critic,
+          lockdownAuditConfirmed,
           bridgeStatus: 'READY',
           receivedAt: Date.now(),
         };
@@ -273,6 +285,32 @@ export class DashboardServer {
     } finally {
       await file.close().catch(() => undefined);
     }
+  }
+
+  private async lockdownEvidence(snapshot: JudgeSnapshot): Promise<boolean> {
+    if (snapshot.safety.riskMode !== 'LOCKDOWN') return false;
+    const cycleId = snapshot.atk.latestProvenance?.cycleId;
+    if (!cycleId) return false;
+    let file: Awaited<ReturnType<typeof open>>;
+    try { file = await open(this.auditPath, 'r'); } catch { return false; }
+    try {
+      const size = (await file.stat()).size;
+      const length = Math.min(size, 131_072);
+      if (!length) return false;
+      const bytes = Buffer.alloc(length);
+      await file.read(bytes, 0, length, size - length);
+      const tail = bytes.toString('utf8');
+      const complete = size > length ? tail.slice(tail.indexOf('\n') + 1) : tail;
+      for (const line of complete.trim().split('\n').reverse()) {
+        try {
+          const event = JSON.parse(line) as Record<string, unknown>;
+          if (event.eventType === 'LOCKDOWN' && event.cycleId === cycleId
+            && typeof event.timestamp === 'number' && event.timestamp <= snapshot.timestamp)
+            return true;
+        } catch { /* Ignore incomplete or unrelated audit lines. */ }
+      }
+      return false;
+    } catch { return false; } finally { await file.close().catch(() => undefined); }
   }
 
   private broadcast(): void {
@@ -352,6 +390,9 @@ if (
       : {}),
     ...(process.env.AURA_DASHBOARD_PORT
       ? { port: Number(process.env.AURA_DASHBOARD_PORT) }
+      : {}),
+    ...(process.env.AURA_DASHBOARD_ALLOWED_HOSTS
+      ? { allowedHosts: process.env.AURA_DASHBOARD_ALLOWED_HOSTS }
       : {}),
   });
   server

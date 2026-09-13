@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { get } from 'node:http';
 import WebSocket from 'ws';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -21,6 +22,7 @@ import {
 import { fixture } from './fixture.js';
 import {
   Ask,
+  Banner,
   Chart,
   Critic,
   History,
@@ -77,6 +79,15 @@ async function connect(url: string): Promise<WebSocket> {
   });
   return ws;
 }
+function statusWithHost(url: string, host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const request = get(url, { headers: { host } }, response => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    });
+    request.once('error', reject);
+  });
+}
 
 async function eventually(
   check: () => boolean,
@@ -91,6 +102,53 @@ async function eventually(
 }
 
 describe('read-only dashboard transport', () => {
+  it('allows only configured tunnel Host and Origin while retaining loopback binding', async () => {
+    const { status, audit, dir, server: defaultServer } = await setup();
+    const hostname = 'judiciary-outspoken-ocean.ngrok-free.dev';
+    const defaultEndpoint = await defaultServer.start();
+    expect(await statusWithHost(`${defaultEndpoint.url}/api/state`, hostname)).toBe(403);
+    expect(await statusWithHost(`${defaultEndpoint.url}/api/state`, 'localhost')).toBe(200);
+    const options = dashboardOptionsFromEnv({ AURA_STATUS_SNAPSHOT_PATH: status,
+      AURA_AUDIT_PATH: audit, AURA_DASHBOARD_ALLOWED_HOSTS: `localhost,127.0.0.1,${hostname}` });
+    expect(options.allowedHosts).toBe(`localhost,127.0.0.1,${hostname}`);
+    const server = new DashboardServer({ ...options, staticRoot: dir, port: 0 });
+    cleanup.push(() => server.close());
+    await publishJudgeSnapshot(status, fixture());
+    const { url, websocketUrl } = await server.start();
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(await statusWithHost(`${url}/api/state`, hostname)).toBe(200);
+    expect(await statusWithHost(`${url}/api/state`, 'other.ngrok-free.dev')).toBe(403);
+    const ws = new WebSocket(websocketUrl, { headers: {
+      Host: hostname, Origin: `https://${hostname}` } });
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+    });
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.terminate();
+    expect(() => new DashboardServer({ allowedHosts: 'localhost,*' })).toThrow('Invalid dashboard allowed host');
+  });
+  it('requires a matching audit LOCKDOWN event before confirming the banner', async () => {
+    const { status, audit, server } = await setup();
+    const snapshot = fixture();
+    snapshot.safety.riskMode = 'LOCKDOWN';
+    snapshot.functional.riskMode = 'LOCKDOWN';
+    await publishJudgeSnapshot(status, snapshot);
+    await writeFile(audit, JSON.stringify({ eventType: 'LOCKDOWN', cycleId: 'wrong',
+      timestamp: snapshot.timestamp - 1, payload: { reason: 'test' } }) + '\n');
+    await server.refresh();
+    expect(server.current.lockdownAuditConfirmed).toBe(false);
+    expect(renderToStaticMarkup(React.createElement(Banner, {
+      s: server.current.snapshot, lockdownAuditConfirmed: server.current.lockdownAuditConfirmed,
+    }))).toContain('RISK EVIDENCE UNAVAILABLE');
+    await writeFile(audit, JSON.stringify({ eventType: 'LOCKDOWN', cycleId: 'c1',
+      timestamp: snapshot.timestamp - 1, payload: { reason: 'test' } }) + '\n');
+    await server.refresh();
+    expect(server.current.lockdownAuditConfirmed).toBe(true);
+    expect(renderToStaticMarkup(React.createElement(Banner, {
+      s: server.current.snapshot, lockdownAuditConfirmed: server.current.lockdownAuditConfirmed,
+    }))).toContain('RISK LOCKDOWN');
+  });
   it('uses the agent:run dashboard bridge paths and provides loopback HTTP/WebSocket endpoints', async () => {
     const { dir, status, audit, server } = await setup();
     await writeFile(join(dir, 'index.html'), '<!doctype html><title>AURA</title>');
@@ -222,6 +280,18 @@ describe('read-only dashboard transport', () => {
 describe('rendered dashboard evidence and empty states', () => {
   const render = (component: React.ReactElement) =>
     renderToStaticMarkup(component);
+  it('shows a neutral pre-evaluation state and never labels a halted agent as lockdown', () => {
+    const s = fixture();
+    s.functional.state = 'HALTED';
+    s.safety.riskMode = null;
+    expect(render(React.createElement(Banner, { s }))).toContain('AGENT STOPPED');
+    expect(render(React.createElement(Banner, { s }))).not.toContain('RISK LOCKDOWN');
+    s.safety.riskMode = 'LOCKDOWN';
+    expect(render(React.createElement(Banner, { s, lockdownAuditConfirmed: true }))).toContain('AGENT STOPPED');
+    s.safety.riskMode = null;
+    s.functional.state = 'LIVE_READY';
+    expect(render(React.createElement(Banner, { s }))).toContain('AWAITING FIRST RISK EVALUATION');
+  });
   it('renders actual BTC/ETH values, selection, pipeline rejection and no write call', () => {
     const s = fixture();
     const markets = render(React.createElement(Markets, { s }));
@@ -267,6 +337,7 @@ describe('rendered dashboard evidence and empty states', () => {
       snapshot: s,
       equityHistory: [],
       critic: { setupQuality: 'B' as const },
+      lockdownAuditConfirmed: false,
       bridgeStatus: 'READY' as const,
       receivedAt: Date.now(),
     };

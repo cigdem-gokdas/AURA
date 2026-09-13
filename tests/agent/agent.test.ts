@@ -240,7 +240,7 @@ describe('AURA orchestration', () => {
     const h = harness({ scores: { 'BTC-USDT': 0, 'ETH-USDT': 0 }, observer });
     await h.agent.preflight(); h.agent.activate();
     expect((await h.agent.runSlowCycle()).status).toBe('HOLD');
-    expect(observer).toHaveBeenCalledTimes(1);
+    expect(observer).toHaveBeenCalledTimes(2);
     expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
     expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
     await h.agent.shutdown();
@@ -455,12 +455,14 @@ describe('AURA orchestration', () => {
     const h = harness({ llmFailure: true, observer: snapshot => { snapshots.push(snapshot); } });
     await h.agent.preflight(); h.agent.activate();
     expect((await h.agent.runSlowCycle()).status).toBe('REJECTED');
-    expect(snapshots).toHaveLength(1);
-    expect(snapshots[0]?.selectedSymbol).toBe('BTC-USDT');
-    expect(snapshots[0]?.selectedOQS).toBe(80);
-    expect(snapshots[0]?.llm?.status).toBe('TIMEOUT');
-    expect(snapshots[0]?.riskCertificate?.verdict).toBe('REJECT');
-    expect(snapshots[0]?.equity?.starting).toBe(10_000);
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]?.state).toBe('LIVE_READY');
+    expect(snapshots[0]?.riskMode).toBeNull();
+    expect(snapshots[1]?.selectedSymbol).toBe('BTC-USDT');
+    expect(snapshots[1]?.selectedOQS).toBe(80);
+    expect(snapshots[1]?.llm?.status).toBe('TIMEOUT');
+    expect(snapshots[1]?.riskCertificate?.verdict).toBe('REJECT');
+    expect(snapshots[1]?.equity?.starting).toBe(10_000);
     expect(h.agent.latestProvenance?.nodes.some(node => node.source === 'RISK')).toBe(true);
     expect(h.agent.latestProvenance?.nodes.some(node => node.lane === 'WRITE')).toBe(false);
     expect(h.agent.explainCurrentState('WHY_REJECTED').text).toContain('Risk rejected');
@@ -473,9 +475,9 @@ describe('AURA orchestration', () => {
     const h = harness({ observer: snapshot => { snapshots.push(snapshot); } });
     await h.agent.preflight(); h.agent.activate();
     expect((await h.agent.runSlowCycle()).status).toBe('SUBMITTED');
-    expect(snapshots[0]?.riskCertificate?.verdict).toBe('ALLOW');
-    expect(snapshots[0]?.llm?.action).toBe('AGREE');
-    expect(snapshots[0]?.equity?.current).toBe(10_000);
+    expect(snapshots.at(-1)?.riskCertificate?.verdict).toBe('ALLOW');
+    expect(snapshots.at(-1)?.llm?.action).toBe('AGREE');
+    expect(snapshots.at(-1)?.equity?.current).toBe(10_000);
     const judge = h.agent.getJudgeSnapshot();
     expect(judge?.reasoning.selectedSymbol).toBe('BTC-USDT');
     expect(judge?.reasoning.criticVerdict).toBe('AGREE');
@@ -680,7 +682,7 @@ describe('AURA orchestration', () => {
     expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
   });
 
-  it('waits out measured millisecond clock skew but rejects a materially future book', async () => {
+  it('waits out realistic clock skew, while rejecting future and stale books', async () => {
     const h = harness();
     const evaluationTime = 1_789_213_220_000;
     h.market.getCandles = vi.fn(async symbol => Array.from({ length: 30 }, (_, index) => {
@@ -689,20 +691,24 @@ describe('AURA orchestration', () => {
         open: close, high: close + 1, low: close - 1, close, volume: 100 };
     }));
     h.market.getOrderBook = vi.fn(async symbol => ({ symbol,
-      timestamp: evaluationTime + 20,
+      timestamp: evaluationTime + 1_250,
       bids: [{ price: 99, size: 2 }], asks: [{ price: 101, size: 3 }] }));
     let clockReads = 0;
     const agent = new AuraAgent(agentConfigFromEnv(env()), { connector: h.connector,
       market: h.market, execution: h.execution, llm: h.llm,
-      now: () => ++clockReads === 1 ? evaluationTime : evaluationTime + 25 });
+      now: () => ++clockReads === 1 ? evaluationTime : evaluationTime + 1_255 });
     const evaluate = (agent as unknown as {
       evaluate(symbol: string, position: null): Promise<SymbolEvaluation>;
     }).evaluate.bind(agent);
     expect((await evaluate('BTC-USDT', null)).feature.dataAgeMs).toBe(5);
     h.market.getOrderBook = vi.fn(async symbol => ({ symbol,
-      timestamp: evaluationTime + 1_000,
+      timestamp: evaluationTime + 5_000,
       bids: [{ price: 99, size: 2 }], asks: [{ price: 101, size: 3 }] }));
     await expect(evaluate('BTC-USDT', null)).rejects.toThrow('Order book timestamp is in the future');
+    h.market.getOrderBook = vi.fn(async symbol => ({ symbol,
+      timestamp: evaluationTime - 10_001,
+      bids: [{ price: 99, size: 2 }], asks: [{ price: 101, size: 3 }] }));
+    await expect(evaluate('BTC-USDT', null)).rejects.toThrow('Stale order book for BTC-USDT');
     expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
   });
 
