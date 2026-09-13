@@ -364,12 +364,15 @@ export function Chart({
 }
 
 export function Markets({ s }: { s: JudgeSnapshot | null }) {
+  const universe = s?.functional.universe;
   return (
     <section className="section" id="markets">
       <Heading
         eyebrow="THE LIQUID UNIVERSE"
-        title="One risk budget. Two opportunities."
-        aside="AURA compares BTC and ETH, then allocates its single risk budget to the strongest eligible setup."
+        title="Daily liquid USDT universe"
+        aside={universe
+          ? `${universe.selected.length} tracked pairs · minimum 24h quote volume ${money(universe.minimumQuoteVolume24h)} USDT · ${universe.excludedForLiquidity} excluded for insufficient liquidity`
+          : 'AURA selects liquid spot pairs from READ-lane market evidence.'}
       />
       {s && !s.functional.selectedSymbol && (
         <div className="notice">
@@ -778,9 +781,33 @@ export function Position({ s }: { s: JudgeSnapshot | null }) {
   const p = s?.functional.position,
     plan = s?.reasoning.riskCertificate?.protectionPlan,
     mode = s?.safety.protectionMode;
+  const positions = s?.functional.positions ?? [];
   return (
     <section className="section" id="position">
       <Heading eyebrow="CAPITAL IN MARKET" title="Position & protection" />
+      {positions.length > 1 ? positions.map((held) => (
+        <article className="card position" key={held.symbol}>
+          <div className="panel-head">
+            <div><span className="eyebrow">OPEN POSITION</span><h3>LONG · {held.symbol}</h3></div>
+            <Pill tone={held.protectionMode && held.protectionMode !== 'UNAVAILABLE' ? 'good' : 'warn'}>
+              {label(held.protectionMode)}
+            </Pill>
+          </div>
+          <div className="position-facts">
+            <div><span>Quantity</span><strong>{num(held.quantity, 8)}</strong></div>
+            <div><span>Average entry</span><strong>{money(held.entryPrice)}</strong></div>
+            <div><span>Mark price</span><strong>{money(held.markPrice)}</strong></div>
+            <div><span>Current protective stop</span><strong>{money(held.stopPrice)}</strong></div>
+            <div><span>Take-profit reference</span><strong>{money(held.takeProfitPrice)}</strong></div>
+            <div><span>Break-even / trailing</span><strong>
+              {held.breakEvenActivated ? 'BREAK-EVEN ON' : 'BREAK-EVEN OFF'} · {held.trailingActivated ? 'TRAILING ON' : 'TRAILING OFF'}
+            </strong></div>
+            <div><span>Realized / unrealized PnL</span><strong>
+              {money(held.realizedPnl)} / {money(held.unrealizedPnl)}
+            </strong></div>
+          </div>
+        </article>
+      )) : (
       <article className="card position">
         {p ? (
           <>
@@ -855,7 +882,7 @@ export function Position({ s }: { s: JudgeSnapshot | null }) {
               <span className="eyebrow">CURRENT EXPOSURE</span>
               <h3>NO OPEN POSITION</h3>
               <p>
-                AURA is flat. Its single-position risk budget is available only
+                AURA is flat. Its managed-position budget is available only
                 to an eligible, approved opportunity.
               </p>
             </div>
@@ -873,6 +900,7 @@ export function Position({ s }: { s: JudgeSnapshot | null }) {
           </div>
         )}
       </article>
+      )}
     </section>
   );
 }
@@ -1118,7 +1146,7 @@ function App() {
           <p>
             One liquid universe.
             <br />
-            One position at a time.
+            Up to three protected positions.
           </p>
           <small>READ-ONLY OBSERVATION</small>
         </div>
@@ -1182,7 +1210,7 @@ function App() {
             <span className="eyebrow">AT A GLANCE</span>
             <h2>The state of AURA</h2>
           </div>
-          <span>One position maximum across BTC-USDT and ETH-USDT</span>
+          <span>{f?.maxConcurrentPositions ?? 3} managed positions maximum across the daily liquid universe</span>
         </div>
         <div className="metrics">
           <CardMetric
@@ -1218,15 +1246,19 @@ function App() {
             value={
               !s
                 ? 'Unknown'
-                : f?.position
-                  ? `${f.position.symbol} LONG`
+                : f?.positions?.length
+                  ? `${f.positions.length} open`
+                  : f?.position
+                    ? `${f.position.symbol} LONG`
                   : 'Flat'
             }
             note={
               !s
                 ? 'Awaiting position state'
-                : f?.position
-                  ? `${num(f.position.quantity, 6)} units`
+                : f?.positions?.length
+                  ? f.positions.map(position => position.symbol).join(', ')
+                  : f?.position
+                    ? `${num(f.position.quantity, 6)} units`
                   : 'Risk budget available'
             }
           />

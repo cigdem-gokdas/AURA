@@ -9,6 +9,7 @@ import { protectionSignatureMatches, protectionTriggers } from '../execution/eng
 import type { RecentSpotFill } from '../market/types.js';
 import type { LlmClient, LlmDecisionResult } from '../llm/types.js';
 import type { MarketAdapter, SpotFeeRate, TradingBalanceSnapshot } from '../market/types.js';
+import { selectLiquidUniverse, type UniverseSelection } from '../market/universe.js';
 import type { AuditEvent, AuditEventType } from '../memory/audit.js';
 import { hardStopBreached, promoteBreakEven, activateTrailing, updateAtrTrailingStop,
   takeProfitReached, timeStopReached, regimeInvalidated } from '../monitor/protection.js';
@@ -44,11 +45,18 @@ export interface SymbolEvaluation {
   fee: SpotFeeRate;
 }
 
+export interface ObservedPosition {
+  symbol: string; quantity: number; entryPrice: number; markPrice: number; stopPrice: number;
+  unrealizedPnl?: number; realizedPnl?: number; takeProfitPrice?: number | null;
+  breakEvenActivated?: boolean; trailingActivated?: boolean; protectionMode?: string;
+}
+
 export interface ObserverSnapshot {
   timestamp: number;
   state: AgentState;
   mcpHealthy: boolean;
   symbols: readonly string[];
+  universe?: UniverseSelection | null;
   markets: Readonly<Record<string, { close: number; spreadBps: number; atrPctPercentile: number;
     regime: string; candidateAction: string; oqs: number; edgeCostRatio: number;
     setupType?: string; obiTop5?: number; micropriceLeanBps?: number; dataAgeMs?: number }>>;
@@ -58,9 +66,10 @@ export interface ObserverSnapshot {
     regimeConfirmation?: string | null; setupQuality?: string | null; reason?: string | null } | null;
   riskCertificate: RiskCertificate | null;
   openPositionSymbol: string | null;
-  position: { symbol: string; quantity: number; entryPrice: number; markPrice: number; stopPrice: number;
-    unrealizedPnl?: number; realizedPnl?: number; takeProfitPrice?: number | null;
-    breakEvenActivated?: boolean; trailingActivated?: boolean; protectionMode?: string } | null;
+  openPositionSymbols?: readonly string[];
+  maxConcurrentPositions?: number;
+  position: ObservedPosition | null;
+  positions?: readonly ObservedPosition[];
   equity: { starting: number; current: number; peak: number; dailyPnl: number; dailyReturnPct: number;
     currentDrawdownPct: number; maximumDrawdownPct: number } | null;
   riskMode: RiskMode | null;
@@ -73,6 +82,8 @@ export interface PreflightReport {
   state: AgentState;
   checks: readonly { name: string; passed: boolean; detail: string }[];
   positionSymbol: string | null;
+  positionSymbols?: readonly string[];
+  universe?: UniverseSelection | null;
   unmanagedInventory?: readonly ExchangePositionSnapshot[];
   readiness?: 'READY_FOR_OBSERVE' | 'READY_FOR_DEMO' | 'READY_FOR_LIVE' | 'BLOCKED';
   readLane?: { status: 'READY' | 'FAILED'; serverVersion: string | null; profile: string; readOnly: boolean; toolCount: number };
@@ -125,6 +136,8 @@ export interface AgentDependencies {
   observer?: (snapshot: ObserverSnapshot) => void | Promise<void>;
   audit?: (event: AuditEvent) => void | Promise<void>;
   persistPosition?: (position: OpenPosition | null) => Promise<void>;
+  persistPositions?: (positions: readonly OpenPosition[]) => Promise<void>;
+  recoverySymbols?: () => Promise<readonly string[]>;
   now?: () => number;
   /** Strategy seam for offline orchestration tests; production uses the existing feature/regime/signal modules. */
   evaluateSymbol?: (symbol: string, previous: RegimeHysteresisState | null, position: OpenPosition | null)
@@ -152,6 +165,8 @@ export class AuraAgent {
   private readonly evaluations = new Map<string, SymbolEvaluation>();
   private readonly metadata = new Map<string, { minOrderSize: number; quantityStep: number; tickSize: number }>();
   private readonly feeRates = new Map<string, SpotFeeRate>();
+  private universeSymbols: string[];
+  private universeSelection: UniverseSelection | null = null;
   private latestLlm: LlmDecisionResult | null = null;
   private latestCertificate: RiskCertificate | null = null;
   private selected: CandidateSignal | null = null;
@@ -220,6 +235,43 @@ export class AuraAgent {
     this.monitor = deps.monitor ?? null;
     this.now = deps.now ?? Date.now;
     this.contextPulse = new ContextPulseCache(config.contextPulseEnabled);
+    this.universeSymbols = [...config.symbols];
+  }
+
+  private async openPositions(): Promise<readonly OpenPosition[]> {
+    if (!this.monitor) return [];
+    if (this.monitor.getOpenPositions) return this.monitor.getOpenPositions();
+    const single = await this.monitor.getOpenPosition();
+    return single ? [single] : [];
+  }
+
+  private async persistPositions(): Promise<void> {
+    const positions = (await this.openPositions()).map(item => this.currentPosition(item)!);
+    if (this.deps.persistPositions) await this.deps.persistPositions(positions);
+    else if (positions.length <= 1) await this.deps.persistPosition?.(positions[0] ?? null);
+    else throw new Error('Multi-position checkpoint persistence unavailable');
+  }
+
+  private async refreshUniverse(force = false): Promise<void> {
+    if (!force && this.universeSelection
+      && this.now() - this.universeSelection.evaluatedAt < this.config.universeRefreshMs) return;
+    if (this.deps.market.getSpotTickers24h && this.deps.market.getSpotInstrumentListings) {
+      const [tickers, instruments] = await Promise.all([
+        this.deps.market.getSpotTickers24h(), this.deps.market.getSpotInstrumentListings(),
+      ]);
+      const selection = selectLiquidUniverse(tickers, instruments, this.config.universeSize,
+        this.config.min24hQuoteVolumeUsdt, this.now(), this.config.risk.maxDataAgeMs);
+      if (selection.selected.length < 2) throw new Error('Fewer than two liquid USDT spot pairs passed universe selection');
+      this.universeSelection = selection;
+      this.universeSymbols = selection.selected.map(item => item.symbol);
+      this.audit('UNIVERSE_SELECTION', selection);
+    } else if (!this.universeSymbols.length) {
+      throw new Error('READ-lane bulk spot ticker/instrument capability unavailable');
+    }
+    const held = (await this.openPositions()).map(item => item.symbol);
+    const recovery = await this.deps.recoverySymbols?.() ?? [];
+    this.config.symbols.splice(0, this.config.symbols.length,
+      ...new Set([...this.universeSymbols, ...held, ...recovery]));
   }
 
   get state(): AgentState { return this.stateValue; }
@@ -250,6 +302,8 @@ export class AuraAgent {
         contextPulse: this.lastPulse ? { ...this.lastPulse } : null },
       safety: { liveArmed: this.config.liveTradingArmed, riskMode: functional.riskMode,
         protectionMode: position?.protectionMode ?? null,
+        protectionModes: Object.fromEntries((functional.positions ?? []).map(item =>
+          [item.symbol, item.protectionMode ?? 'UNAVAILABLE'])),
         reconciliationPending: this.pending !== null || this.ownershipReconciliationPending,
         degradedReason: functional.degradedReason } });
   }
@@ -307,8 +361,8 @@ export class AuraAgent {
       profile: this.config.profile, readOnly: false, toolCount: 0 };
     let writeLaneReport: NonNullable<PreflightReport['writeLane']> = { status: 'FAILED', serverVersion: null,
       profile: this.config.profile, tools: [] };
-    this.check(checks, 'SYMBOLS', this.config.symbols.length > 0 && new Set(this.config.symbols).size === this.config.symbols.length,
-      this.config.symbols.join(','));
+    this.check(checks, 'UNIVERSE_CONFIG', this.config.universeSize >= 2
+      && this.config.min24hQuoteVolumeUsdt > 0, 'Daily USDT spot liquidity policy');
     this.check(checks, 'MCP_MODE', this.config.connectorMode === 'mcp', 'Official MCP transport required');
     this.check(checks, 'PROFILE', this.deps.connector.profile === this.config.profile, this.config.profile);
     this.check(checks, 'READ_ONLY', this.deps.connector.readOnly !== false, 'READ lane must use --read-only');
@@ -326,6 +380,16 @@ export class AuraAgent {
       this.check(checks, 'READ_LANE', readReady, health.reason ?? health.status);
       this.check(checks, 'WRITE_LANE', writeReady, writeHealth?.reason ?? writeHealth?.status ?? 'Compatible execution adapter');
       const tools = new Set((await this.deps.connector.listTools()).map(tool => tool.name));
+      await this.refreshUniverse(true);
+      this.check(checks, 'SYMBOLS', this.universeSymbols.length >= 2
+        && new Set(this.universeSymbols).size === this.universeSymbols.length,
+        this.universeSymbols.join(','));
+      this.check(checks, 'UNIVERSE_SELECTION', this.universeSelection !== null
+        || !this.deps.market.getSpotTickers24h,
+        this.universeSelection ? `minimum24hUSDT=${this.universeSelection.minimumQuoteVolume24h}; `
+          + `excludedLiquidity=${this.universeSelection.excludedForLiquidity}; `
+          + this.universeSelection.selected.map(item => `${item.symbol}:${item.quoteVolume24h}`).join(', ')
+          : 'Fixed-symbol test adapter');
       readLaneReport = { status: readReady ? 'READY' : 'FAILED',
         serverVersion: this.deps.connector.getServerVersion?.() ?? null,
         profile: this.config.profile, readOnly: this.deps.connector.readOnly === true,
@@ -406,17 +470,20 @@ export class AuraAgent {
       this.check(checks, 'FRESH_MARKET', true, 'Ticker freshness confirmed for all symbols');
       if (!this.monitor) this.monitor = this.deps.createMonitor?.(snapshot)
         ?? new InMemoryPositionMonitor(snapshot.totalEquityUsd, snapshot.timestamp,
-          snapshot.balances.find(item => item.currency === 'USDT')?.available ?? snapshot.totalEquityUsd);
-      const local = await this.monitor.getOpenPosition();
+          snapshot.balances.find(item => item.currency === 'USDT')?.available ?? snapshot.totalEquityUsd,
+          this.config.risk.maxConcurrentPositions);
+      const locals = await this.openPositions();
       const context = this.deps.startupContext ? await this.deps.startupContext(snapshot, references)
-        : local ? { referencePrices: references, openedAtBySymbol: { [local.symbol]: local.openedAt },
-          protectionPlans: { [local.symbol]: local.protectionPlan },
-          protectionModes: { [local.symbol]: local.protectionMode } } : emptyContext();
+        : locals.length ? { referencePrices: references,
+          openedAtBySymbol: Object.fromEntries(locals.map(item => [item.symbol, item.openedAt])),
+          protectionPlans: Object.fromEntries(locals.map(item => [item.symbol, item.protectionPlan])),
+          protectionModes: Object.fromEntries(locals.map(item => [item.symbol, item.protectionMode])) } : emptyContext();
       const managedPositions = context.managedPositions ?? snapshot.positions;
       this.unmanagedInventory = (context.unmanagedInventory ?? []).map(position => ({ ...position }));
-      this.check(checks, 'POSITION_OWNERSHIP', managedPositions.length <= 1,
-        managedPositions.length <= 1 ? `${managedPositions.length} AURA-managed active trade(s)`
-          : 'Multiple AURA-managed active trades require reconciliation');
+      this.check(checks, 'POSITION_OWNERSHIP', managedPositions.length <= this.config.risk.maxConcurrentPositions,
+        managedPositions.length <= this.config.risk.maxConcurrentPositions
+          ? `${managedPositions.length} AURA-managed active trade(s)`
+          : 'AURA-managed active trades exceed configured position cap');
       if (this.config.profile === 'live' && this.config.liveTradingArmed
         && managedPositions.length === 0 && this.deps.execution.liveEntryProtectionReady) {
         this.check(checks, 'LIVE_ENTRY_PROTECTION', this.deps.execution.liveEntryProtectionReady(),
@@ -433,7 +500,8 @@ export class AuraAgent {
       // Pending algo protection must belong to the restored AURA trade; anything else
       // (an orphaned stop, an external algo) is unresolved and blocks readiness.
       const attachSupported = executionCapabilities?.attachedProtectionSupported === true;
-      const ownedProtection = new Set(restored.position?.attachedProtectionIds ?? []);
+      const restoredPositions = restored.positions ?? (restored.position ? [restored.position] : []);
+      const ownedProtection = new Set(restoredPositions.flatMap(item => [...(item.attachedProtectionIds ?? [])]));
       const unresolvedProtection: string[] = [];
       let protectionQueryAvailable = true;
       if (this.deps.execution.getPendingProtection) {
@@ -441,8 +509,9 @@ export class AuraAgent {
           const pendingProtection = await this.deps.execution.getPendingProtection(symbol);
           if (pendingProtection === null) { protectionQueryAvailable = false; continue; }
           for (const item of pendingProtection) {
-            const owned = restored.position?.symbol === symbol && (ownedProtection.has(item.algoId)
-              || (!!restored.position.entryOrderId && item.orderId === restored.position.entryOrderId));
+            const owned = restoredPositions.some(position => position.symbol === symbol
+              && (ownedProtection.has(item.algoId)
+                || (!!position.entryOrderId && item.orderId === position.entryOrderId)));
             if (!owned) unresolvedProtection.push(`${symbol}:${item.algoId}`);
           }
         }
@@ -469,7 +538,9 @@ export class AuraAgent {
       else this.degradedReason = null;
       const readiness = !passed ? 'BLOCKED' : this.config.profile === 'demo' ? 'READY_FOR_DEMO'
         : this.config.liveTradingArmed ? 'READY_FOR_LIVE' : 'READY_FOR_OBSERVE';
-      const report: PreflightReport = { passed, state: this.stateValue, checks, positionSymbol: restored.position?.symbol ?? null,
+      const report: PreflightReport = { passed, state: this.stateValue, checks,
+        positionSymbol: restoredPositions.length === 1 ? restoredPositions[0]!.symbol : null,
+        positionSymbols: restoredPositions.map(item => item.symbol), universe: this.universeSelection,
         unmanagedInventory: this.unmanagedInventory.map(position => ({ ...position })),
         readiness, blockers: checks.filter(item => !item.passed).map(item => item.name),
         readLane: readLaneReport, writeLane: writeLaneReport };
@@ -506,6 +577,7 @@ export class AuraAgent {
       this.check(checks, 'EXCHANGE_PREFLIGHT', false, detail);
       const report: PreflightReport = { passed: false, state: this.stateValue, checks,
         positionSymbol: (await this.monitor?.getOpenPosition())?.symbol ?? null,
+        positionSymbols: (await this.openPositions()).map(item => item.symbol), universe: this.universeSelection,
         unmanagedInventory: this.unmanagedInventory.map(position => ({ ...position })),
         readiness: 'BLOCKED', blockers: checks.filter(item => !item.passed).map(item => item.name),
         readLane: readLaneReport, writeLane: writeLaneReport };
@@ -565,16 +637,19 @@ export class AuraAgent {
     this.evaluations.set(evaluation.symbol, evaluation);
   }
 
-  /** A flat monitor may coexist with inventory, but not an unreconciled AURA trade. */
-  private async assertFlatExchange(snapshot: StartupExchangeSnapshot): Promise<void> {
+  /** New entries require exact AURA ownership, while unrelated inventory stays separate. */
+  private async assertExchangeMatchesMonitor(snapshot: StartupExchangeSnapshot): Promise<void> {
     if (snapshot.profile !== this.config.profile || snapshot.openOrders.length > 0) {
-      throw new Error('Exchange profile or open orders changed while local monitor is flat');
+      throw new Error('Exchange profile or open orders changed before entry');
     }
     const context = this.deps.startupContext
       ? await this.deps.startupContext(snapshot, {}) : emptyContext();
-    if ((context.managedPositions ?? snapshot.positions).length > 0) {
-      throw new OwnershipAmbiguityError('AURA-managed trade appeared while local monitor is flat');
-    }
+    const managed = context.managedPositions ?? snapshot.positions;
+    const local = await this.openPositions();
+    if (managed.length !== local.length || managed.length > this.config.risk.maxConcurrentPositions
+      || managed.some(item => !local.some(position => position.symbol === item.symbol
+        && Math.abs(position.quantity - item.quantity) <= 1e-10)))
+      throw new OwnershipAmbiguityError('AURA-managed exchange positions differ from local monitor');
     this.unmanagedInventory = (context.unmanagedInventory ?? []).map(position => ({ ...position }));
   }
 
@@ -604,7 +679,8 @@ export class AuraAgent {
     context: 'LIVE' | 'DEMO_VERIFICATION' = 'LIVE'): Promise<boolean> {
     if (this.pending || !this.mcpHealthy) return false;
     // Autonomous exits need LIVE; the explicit demo verifier may exit only on the demo profile.
-    if (context === 'LIVE' ? this.stateValue !== 'LIVE' : this.config.profile !== 'demo') return false;
+    if (context === 'LIVE' ? !['LIVE', 'DEGRADED'].includes(this.stateValue)
+      || this.config.profile !== 'live' || !this.config.liveTradingArmed : this.config.profile !== 'demo') return false;
     const symbol = position.symbol;
     const meta = this.metadata.get(symbol);
     if (!meta) { this.degrade(`Instrument metadata missing for ${symbol} exit`); return false; }
@@ -678,8 +754,8 @@ export class AuraAgent {
         this.recordClose(symbol, applied, fill.timestamp, true, { orderId: fill.orderId, price: fill.price, quantity, external: true });
       }
       await this.writeOffResidual(symbol, { symbol });
-      await this.deps.persistPosition?.(await this.monitor.getOpenPosition());
-      if (!(await this.monitor.getOpenPosition())) await this.cleanupProtection(position, {});
+      await this.persistPositions();
+      if (!(await this.monitor.getOpenPosition(symbol))) await this.cleanupProtection(position, {});
     } catch (error) {
       this.ownershipReconciliationPending = true;
       this.degrade(error instanceof Error ? error.message : 'External exit reconciliation failed');
@@ -703,7 +779,7 @@ export class AuraAgent {
   private async writeOffResidual(symbol: string,
     identity: Partial<Pick<AuditEvent, 'cycleId' | 'decisionId' | 'clientOrderId' | 'symbol'>>): Promise<void> {
     if (!this.monitor?.closeResidualDust) return;
-    const residual = await this.monitor.getOpenPosition();
+    const residual = await this.monitor.getOpenPosition(symbol);
     const meta = this.metadata.get(symbol);
     if (!residual || residual.symbol !== symbol || !meta || residual.quantity >= meta.quantityStep) return;
     const closed = this.monitor.closeResidualDust(symbol, meta.quantityStep, this.now());
@@ -712,18 +788,17 @@ export class AuraAgent {
       note: 'Sub-lot remainder written off at zero; it remains in the wallet as unmanaged inventory' }, identity);
   }
 
-  private async monitorHeld(slow: boolean): Promise<string> {
+  private async monitorHeld(slow: boolean, symbol: string): Promise<string> {
     const monitor = this.monitor;
     if (!monitor) return 'Monitor unavailable';
-    const held = this.currentPosition(await monitor.getOpenPosition());
+    const held = this.currentPosition(await monitor.getOpenPosition(symbol));
     if (!held) return 'Flat';
-    const symbol = held.symbol;
     const ticker = await this.deps.market.getTicker(symbol);
     const markTime = await this.settleClockSkew(ticker.timestamp);
     if (ticker.symbol !== symbol || !validTime(markTime, ticker.timestamp, this.config.risk.maxDataAgeMs))
       throw new Error(`Stale held-symbol ticker ${symbol}`);
     monitor.updateMark(symbol, ticker.last, markTime);
-    let updated = this.currentPosition(await monitor.getOpenPosition())!;
+    let updated = this.currentPosition(await monitor.getOpenPosition(symbol))!;
     updated = promoteBreakEven(symbol, updated, ticker.last, this.now());
     updated = activateTrailing(symbol, updated, ticker.last, this.now());
     const latest = this.evaluations.get(symbol);
@@ -751,7 +826,7 @@ export class AuraAgent {
       const exitRequested = await this.submitProtectiveExit(updated, ticker.last);
       if (exitRequested) this.audit('EXIT', { phase: 'REQUESTED', reason: immediateReason,
         requestedQuantity: updated.quantity, referencePrice: ticker.last }, { symbol });
-      await this.deps.persistPosition?.(this.currentPosition(await monitor.getOpenPosition()));
+      await this.persistPositions();
       return immediateReason;
     }
     if (slow) this.retain(await this.evaluate(symbol, updated));
@@ -762,8 +837,16 @@ export class AuraAgent {
     if (reason) await this.submitProtectiveExit(updated, ticker.last);
     if (reason) this.audit('PROTECTION', { reason, markPrice: ticker.last,
       stopPrice: updated.protection.currentStopPrice, mode: updated.protectionMode }, { symbol });
-    await this.deps.persistPosition?.(this.currentPosition(await monitor.getOpenPosition()));
+    await this.persistPositions();
     return reason ?? 'Protected';
+  }
+
+  private async monitorHeldAll(slow: boolean): Promise<string> {
+    const results: string[] = [];
+    for (const position of await this.openPositions()) {
+      results.push(`${position.symbol}:${await this.monitorHeld(slow, position.symbol)}`);
+    }
+    return results.length ? results.join(', ') : 'Flat';
   }
 
   private nextInternalId(): string { this.sequence += 1; return `aura${this.now()}_${this.sequence}`; }
@@ -844,7 +927,7 @@ export class AuraAgent {
       .sort((a, b) => a.timestamp - b.timestamp);
     const fills = observed.length ? observed : this.fillsFromOrderRecord(result.order, pending, exchangeOrderId);
     if (!fills.length) return;
-    const before = await this.monitor.getOpenPosition();
+    const before = await this.monitor.getOpenPosition(pending.plan.symbol);
     let total = 0;
     for (const fill of fills) {
       if (fill.symbol !== pending.plan.symbol || fill.side.toUpperCase() !== pending.plan.side) {
@@ -878,13 +961,13 @@ export class AuraAgent {
     if (total + 1e-12 < pending.plan.quantity) return;
     if (pending.plan.side === 'SELL') await this.writeOffResidual(pending.plan.symbol, { cycleId: pending.plan.cycleId,
       decisionId: pending.plan.decisionId, clientOrderId: pending.plan.clientOrderId });
-    await this.deps.persistPosition?.(await this.monitor.getOpenPosition());
+    await this.persistPositions();
     this.pending = null;
     this.audit('RECONCILIATION_RESOLVED', { outcome: 'FILLED', orderId: exchangeOrderId,
       quantity: total }, { cycleId: pending.plan.cycleId, decisionId: pending.plan.decisionId,
       clientOrderId: pending.plan.clientOrderId, symbol: pending.plan.symbol });
     if (this.stateValue === 'DEGRADED') this.degradedReason = 'Order resolved; full preflight required';
-    if (pending.plan.side === 'SELL' && before && !(await this.monitor.getOpenPosition())) {
+    if (pending.plan.side === 'SELL' && before && !(await this.monitor.getOpenPosition(pending.plan.symbol))) {
       await this.cleanupProtection(before, { cycleId: pending.plan.cycleId,
         decisionId: pending.plan.decisionId, clientOrderId: pending.plan.clientOrderId });
     }
@@ -985,17 +1068,32 @@ export class AuraAgent {
           return finish({ status: 'BLOCKED', selectedSymbol: null, reason: 'MCP lane disconnected' }); }
         await this.reconcilePending();
         if (this.pending) return finish({ status: 'BLOCKED', selectedSymbol: null, reason: 'Order reconciliation pending' });
-        const position = await this.monitor?.getOpenPosition() ?? null;
-        if (position) {
-          result = { status: 'MONITORING', selectedSymbol: null, reason: await this.monitorHeld(true) };
-          this.node('LOCAL', 'Held-position protection and reconciliation', position.symbol, result.reason);
-          return result;
+        if (this.universeSelection && this.now() - this.universeSelection.evaluatedAt >= this.config.universeRefreshMs) {
+          await this.refreshUniverse(true);
+          for (const symbol of this.universeSymbols) if (!this.metadata.has(symbol)) {
+            const meta = await this.deps.market.getInstrumentMeta(symbol);
+            if (meta.symbol !== symbol || meta.state && meta.state !== 'live')
+              throw new Error(`New universe instrument ${symbol} unavailable`);
+            this.metadata.set(symbol, meta);
+            this.feeRates.set(symbol, await this.deps.market.getSpotFeeRate(symbol));
+          }
+        }
+        const heldBefore = await this.openPositions();
+        if (heldBefore.length) {
+          const monitoring = await this.monitorHeldAll(true);
+          this.node('LOCAL', 'Held-position protection and reconciliation', null, monitoring);
+          if (this.pending || monitoring.split(', ').some(item => !item.endsWith(':Protected')))
+            return finish({ status: 'MONITORING', selectedSymbol: null, reason: monitoring });
+          if (heldBefore.length >= this.config.risk.maxConcurrentPositions)
+            return finish({ status: 'MONITORING', selectedSymbol: null,
+              reason: `Managed-position cap ${this.config.risk.maxConcurrentPositions} is full` });
         }
         const exchangeBeforeRanking = await this.deps.execution.getStartupSnapshot();
-        await this.assertFlatExchange(exchangeBeforeRanking);
+        await this.assertExchangeMatchesMonitor(exchangeBeforeRanking);
+        const held = await this.openPositions();
         const evaluations: SymbolEvaluation[] = [];
-        for (const symbol of this.config.symbols) {
-          const evaluation = await this.evaluate(symbol, null);
+        for (const symbol of this.universeSymbols) {
+          const evaluation = await this.evaluate(symbol, held.find(item => item.symbol === symbol) ?? null);
           this.retain(evaluation);
           evaluations.push(evaluation);
           this.audit('MARKET_ACCEPTED', { price: evaluation.feature.close,
@@ -1014,7 +1112,9 @@ export class AuraAgent {
           this.node('LOCAL', 'Features, regime and opportunity score', symbol,
             `${evaluation.regime.stableRegime}; OQS ${evaluation.candidate.opportunityScore}`);
         }
-        const ranked = rankEntryCandidates(evaluations.map(item => item.candidate));
+        const heldSymbols = new Set(held.map(item => item.symbol));
+        const ranked = rankEntryCandidates(evaluations.map(item => item.candidate))
+          .filter(item => !heldSymbols.has(item.symbol));
         const selected = ranked[0] ?? null;
         this.audit('OPPORTUNITY_SELECTED', { selectedSymbol: selected?.symbol ?? null,
           oqs: selected?.opportunityScore ?? null,
@@ -1035,7 +1135,7 @@ export class AuraAgent {
         const optionalEvidence = await Promise.allSettled([
           crossCheckIndicators(this.deps.connector, selectedEval.feature),
           fetchPairEvidence(this.deps.connector, selected.symbol, other.symbol, this.now()),
-          this.contextPulse.get(this.deps.connector, this.config.symbols, this.now()),
+          this.contextPulse.get(this.deps.connector, this.universeSymbols, this.now()),
         ]);
         this.lastIndicatorChecks = optionalEvidence[0].status === 'fulfilled' ? optionalEvidence[0].value : [];
         this.lastPairContext = optionalEvidence[1].status === 'fulfilled' ? optionalEvidence[1].value
@@ -1047,7 +1147,7 @@ export class AuraAgent {
             otherRegime: other.regime.stableRegime },
           microstructure: { spreadBps: selectedEval.feature.spreadBps,
             obiTop5: selectedEval.feature.obiTop5, micropriceLeanBps: selectedEval.feature.micropriceLeanBps },
-          position: { hasOpenLong: false, openLongSymbol: null },
+          position: { hasOpenLong: held.length > 0, openLongSymbol: held.length === 1 ? held[0]!.symbol : null },
           recentMemory: this.monitor?.getRecentDecisionMemory() ?? [],
           indicatorCrossChecks: this.lastIndicatorChecks,
           atkCrossMarket: this.lastPairContext,
@@ -1063,20 +1163,20 @@ export class AuraAgent {
           this.latestLlm.status === 'SUCCESS');
         const balance = await this.deps.market.getTradingBalanceSnapshot();
         const exchangeAtRisk = await this.deps.execution.getStartupSnapshot();
-        await this.assertFlatExchange(exchangeAtRisk);
+        await this.assertExchangeMatchesMonitor(exchangeAtRisk);
         const performance = await this.monitor!.getPerformanceState();
-        const riskPosition = await this.monitor!.getOpenPosition();
+        const riskPositions = await this.openPositions();
         // Raw spot balances are inventory, not active trades. Only the reconciled
-        // monitor position enters the unchanged hard risk position gates.
-        if (riskPosition && !exchangeAtRisk.positions.some(item => item.symbol === riskPosition.symbol
-          && item.quantity + 1e-10 >= riskPosition.quantity)) {
+        // monitor positions enter the hard risk position gates.
+        if (riskPositions.some(position => !exchangeAtRisk.positions.some(item => item.symbol === position.symbol
+          && item.quantity + 1e-10 >= position.quantity))) {
           throw new Error('AURA-managed position no longer reconciles with exchange inventory');
         }
-        const riskOpenPositions = riskPosition ? (() => {
-          const notional = riskPosition.quantity * riskPosition.markPrice;
-          return [{ symbol: riskPosition.symbol, quantity: riskPosition.quantity, notional,
-            exposurePct: notional / exchangeAtRisk.totalEquityUsd }];
-        })() : [];
+        const riskOpenPositions = riskPositions.map(position => {
+          const notional = position.quantity * position.markPrice;
+          return { symbol: position.symbol, quantity: position.quantity, notional,
+            exposurePct: notional / exchangeAtRisk.totalEquityUsd };
+        });
         const account = { equity: exchangeAtRisk.totalEquityUsd,
           availableQuoteBalance: exchangeAtRisk.balances.find(item => item.currency === 'USDT')?.available ?? 0,
           dayStartEquity: performance.dayStartEquity, peakEquity: Math.max(performance.peakEquity, exchangeAtRisk.totalEquityUsd),
@@ -1087,22 +1187,30 @@ export class AuraAgent {
           timestamp: Math.min(balance.timestamp, exchangeAtRisk.timestamp) };
         const id = this.nextInternalId();
         const clientOrderId = createOkxClientId('ENTRY');
+        const selectedMeta = this.metadata.get(selected.symbol);
+        if (!selectedMeta) throw new Error(`Instrument metadata missing for ${selected.symbol}`);
+        const minimumNotional = Math.max(this.config.risk.minTradeNotionalUsd,
+          selectedMeta.minOrderSize * selectedEval.feature.midPrice);
         const riskInput: PreTradeRiskInput = { candidate: selected, account,
           market: { symbol: selected.symbol, referencePrice: selectedEval.feature.midPrice,
             spreadBps: selectedEval.feature.spreadBps, atr: selectedEval.feature.atr,
             atrPctPercentile: selectedEval.feature.atrPctPercentile,
             dataAgeMs: selectedEval.feature.dataAgeMs, timestamp: selectedEval.feature.timestamp },
-          config: this.config.risk, timestamp: this.now(), llmResult: this.latestLlm,
+          config: { ...this.config.risk, minTradeNotionalUsd: minimumNotional },
+          timestamp: this.now(), llmResult: this.latestLlm,
           clientOrderId, knownClientOrderIds: [...this.clientIds], cycleId: id, decisionId: id,
+          quantityStep: selectedMeta.quantityStep,
           killSwitchActive: this.deps.killSwitch?.() ?? false, cooldownUntil: null,
           protectionMode: 'CLIENT_SIDE' };
         let risk = evaluateEntryRisk(riskInput);
         if (risk.decision.approved && risk.plan) {
-          const meta = this.metadata.get(selected.symbol);
-          if (!meta) throw new Error(`Instrument metadata missing for ${selected.symbol}`);
-          const rounded = Math.floor((risk.plan.quantity + 1e-12) / meta.quantityStep) * meta.quantityStep;
-          const quantity = Number(rounded.toPrecision(15));
-          if (!Number.isFinite(quantity) || quantity < meta.minOrderSize || quantity > risk.plan.quantity + 1e-10) {
+          const roundedDown = Math.floor((risk.plan.quantity + 1e-12) / selectedMeta.quantityStep)
+            * selectedMeta.quantityStep;
+          const minimumLot = Math.ceil((minimumNotional
+            / risk.plan.referencePrice - 1e-12) / selectedMeta.quantityStep) * selectedMeta.quantityStep;
+          const quantity = Number((roundedDown * risk.plan.referencePrice + 1e-9
+            < minimumNotional ? minimumLot : roundedDown).toPrecision(15));
+          if (!Number.isFinite(quantity) || quantity < selectedMeta.minOrderSize) {
             this.latestCertificate = risk.certificate;
             this.audit('RISK_CERTIFICATE', risk.certificate, { cycleId: provenanceCycleId,
               decisionId: id, clientOrderId, symbol: selected.symbol });
@@ -1121,8 +1229,8 @@ export class AuraAgent {
         this.node('RISK', 'Deterministic Risk Certificate', selected.symbol,
           risk.certificate.verdict, risk.certificate.verdict === 'ALLOW');
         if (exchangeAtRisk.profile !== this.config.profile || exchangeAtRisk.openOrders.length > 0
-          || riskOpenPositions.length > 0 || await this.monitor?.getOpenPosition()) {
-          this.degrade('Exchange position or open order appeared before execution');
+          || (await this.openPositions()).length !== riskOpenPositions.length) {
+          this.degrade('Exchange position count or open order changed before execution');
           return finish({ status: 'BLOCKED', selectedSymbol: selected.symbol, reason: this.degradedReason! });
         }
         if (!risk.decision.approved) {
@@ -1191,10 +1299,10 @@ export class AuraAgent {
         this.mcpHealthy = true;
         await this.reconcilePending();
         if (this.stateValue === 'DEGRADED') {
-          if (await this.monitor?.getOpenPosition()) await this.monitorHeld(false);
+          if ((await this.openPositions()).length) await this.monitorHeldAll(false);
           await this.recover(); return;
         }
-        await this.monitorHeld(false);
+        await this.monitorHeldAll(false);
       } catch (error) {
         this.degrade(error instanceof Error ? error.message : 'Fast safety failure');
         this.audit('ERROR', { stage: 'FAST_CYCLE', reason: this.degradedReason });
@@ -1220,21 +1328,23 @@ export class AuraAgent {
   }
 
   async calibrate(): Promise<{ diagnostics: SignalCalibrationDiagnostics; spreads: Readonly<Record<string, number[]>>;
-    atrPercentiles: Readonly<Record<string, number[]>> }> {
+    atrPercentiles: Readonly<Record<string, number[]>>; universe: UniverseSelection | null }> {
     if (this.stateValue === 'BOOTING') await this.preflight();
     if (!this.deps.connector.isConnected()) throw new Error('MCP unavailable');
+    await this.refreshUniverse(true);
     const candidates: CandidateSignal[] = [];
     const spreads: Record<string, number[]> = {};
     const atrPercentiles: Record<string, number[]> = {};
-    const position = await this.monitor?.getOpenPosition() ?? null;
-    for (const symbol of this.config.symbols) {
-      const item = await this.evaluate(symbol, position);
+    const positions = await this.openPositions();
+    for (const symbol of this.universeSymbols) {
+      const item = await this.evaluate(symbol, positions.find(position => position.symbol === symbol) ?? null);
       this.retain(item);
       candidates.push(item.candidate);
       spreads[symbol] = [item.feature.spreadBps];
       atrPercentiles[symbol] = [item.feature.atrPctPercentile];
     }
-    const result = { diagnostics: summarizeSignalCalibration(candidates), spreads, atrPercentiles };
+    const result = { diagnostics: summarizeSignalCalibration(candidates), spreads, atrPercentiles,
+      universe: this.universeSelection };
     this.audit('CALIBRATION', result);
     return result;
   }
@@ -1275,7 +1385,7 @@ export class AuraAgent {
         return refused('DEMO_SMOKE refused: active order or AURA-managed position detected', preflight);
       }
       const quoteAvailable = initial.balances.find(item => item.currency === 'USDT')?.available ?? 0;
-      const selection = await selectDemoSmokeMarket(this.config.symbols, this.deps.market,
+      const selection = await selectDemoSmokeMarket(this.universeSymbols, this.deps.market,
         quoteAvailable, this.config.risk.maxDataAgeMs, this.config.risk.maxSpreadBps, this.now);
       if (!selection) return refused('DEMO_SMOKE refused: no fresh, affordable symbol satisfies the spread limit', preflight);
       const baseline = await this.deps.execution.getStartupSnapshot();
@@ -1579,8 +1689,9 @@ export class AuraAgent {
 
   private async publish(): Promise<void> {
     try {
-      const position = this.currentPosition(await this.monitor?.getOpenPosition() ?? null);
-      this.lastPositionForJudge = position;
+      const positions = (await this.openPositions()).map(item => this.currentPosition(item)!);
+      const position = positions[0] ?? null;
+      this.lastPositionForJudge = positions.length === 1 ? position : null;
       const equity = await this.monitor?.getEquitySnapshot() ?? null;
       const markets = Object.fromEntries([...this.evaluations].map(([symbol, item]) => [symbol, {
         close: item.feature.close, spreadBps: item.feature.spreadBps,
@@ -1591,7 +1702,8 @@ export class AuraAgent {
         dataAgeMs: item.feature.dataAgeMs,
       }]));
       const snapshot: ObserverSnapshot = { timestamp: this.now(), state: this.stateValue, mcpHealthy: this.mcpHealthy,
-        symbols: [...this.config.symbols], markets, selectedSymbol: this.selected?.symbol ?? null,
+        symbols: [...this.universeSymbols], universe: this.universeSelection,
+        markets, selectedSymbol: this.selected?.symbol ?? null,
         selectedOQS: this.selected?.opportunityScore ?? null,
         llm: this.latestLlm ? { status: this.latestLlm.status,
           action: this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.action : null,
@@ -1601,8 +1713,18 @@ export class AuraAgent {
           setupQuality: this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.setup_quality : null,
           reason: this.latestLlm.status === 'SUCCESS' ? this.latestLlm.decision.reason : null } : null,
         riskCertificate: this.latestCertificate,
-        openPositionSymbol: position?.symbol ?? null,
-        position: position ? { symbol: position.symbol, quantity: position.quantity,
+        openPositionSymbol: positions.length === 1 ? position?.symbol ?? null : null,
+        openPositionSymbols: positions.map(item => item.symbol),
+        maxConcurrentPositions: this.config.risk.maxConcurrentPositions,
+        positions: positions.map(item => ({ symbol: item.symbol, quantity: item.quantity,
+          entryPrice: item.weightedAverageEntryPrice, markPrice: item.markPrice,
+          stopPrice: item.protection.currentStopPrice,
+          unrealizedPnl: item.unrealizedPnl, realizedPnl: item.realizedPnl,
+          takeProfitPrice: item.protection.takeProfitPrice,
+          breakEvenActivated: item.protection.breakEvenActivated,
+          trailingActivated: item.protection.trailingActivated,
+          protectionMode: item.protectionMode })),
+        position: positions.length === 1 && position ? { symbol: position.symbol, quantity: position.quantity,
           entryPrice: position.weightedAverageEntryPrice, markPrice: position.markPrice,
           stopPrice: position.protection.currentStopPrice,
           unrealizedPnl: position.unrealizedPnl, realizedPnl: position.realizedPnl,

@@ -1,7 +1,6 @@
 import type { JudgeSnapshot } from '../../src/agent/judge.js';
 import type { DashboardState, EquityPoint } from '../../src/dashboard/types.js';
 
-export const symbols = ['BTC-USDT', 'ETH-USDT'] as const;
 export const statusMcpTools = [
   'get_agent_state',
   'get_risk_certificate',
@@ -134,6 +133,8 @@ export function derivePipeline(
       protection.success ? 'PASSED' : 'FAILED',
       protection.result,
     );
+  else if ((snapshot.functional.positions?.length ?? 0) > 0)
+    set('PROTECTION', 'PASSED', `${snapshot.functional.positions!.length} managed position(s)`);
   else if (snapshot.functional.position && snapshot.safety.protectionMode)
     set('PROTECTION', 'PASSED', snapshot.safety.protectionMode);
   return result;
@@ -190,7 +191,7 @@ export function equityChart(
 }
 
 export function marketRows(snapshot: JudgeSnapshot | null) {
-  return symbols.map((symbol) => ({
+  return (snapshot?.functional.symbols ?? []).map((symbol) => ({
     symbol,
     market: snapshot?.functional.markets[symbol] ?? null,
     selected: snapshot?.functional.selectedSymbol === symbol,

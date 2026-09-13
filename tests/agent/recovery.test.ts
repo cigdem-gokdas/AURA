@@ -9,6 +9,9 @@ import { createOkxClientId } from '../../src/okx/client-id.js';
 
 const holding = (symbol: string, quantity = 1): ExchangePositionSnapshot =>
   ({ symbol, quantity, averageEntryPrice: 100, updatedAt: 200 });
+const plan = (symbol: string) => ({ symbol, initialStopPrice: 90,
+  stopDistanceAbsolute: 10, stopDistanceFraction: 0.1, breakEvenTriggerR: 1,
+  trailingActivationR: 1.5, takeProfitR: 2.5, protectionMode: 'CLIENT_SIDE' as const });
 function snapshot(...positions: ExchangePositionSnapshot[]): StartupExchangeSnapshot {
   return { profile: 'live', totalEquityUsd: 10_000, positions, openOrders: [],
     balances: [{ currency: 'USDT', equity: 9_900, available: 9_900 }], recentFills: [],
@@ -33,6 +36,29 @@ async function withStore(run: (store: AgentRecoveryStore) => Promise<void>): Pro
 }
 
 describe('AURA restart ownership classification', () => {
+  it('persists and reconstructs two independently protected managed positions', async () => {
+    await withStore(async store => {
+      const monitor = new InMemoryPositionMonitor(10_000, 0, 10_000, 3);
+      for (const [symbol, timestamp] of [['BTC-USDT', 100], ['ETH-USDT', 101]] as const) {
+        const p = plan(symbol);
+        expect(monitor.processFill({ symbol, clientOrderId: `aura${timestamp}_1`,
+          exchangeOrderId: `order-${symbol}`, fillId: `fill-${symbol}`, side: 'BUY',
+          quantity: 1, price: 100, fee: 0, timestamp },
+        { allowSameSymbolIncrease: false, protectionPlan: p, protectionMode: p.protectionMode }).status).toBe('APPLIED');
+      }
+      await store.savePositions(await monitor.getOpenPositions());
+      const exchange = snapshot(holding('BTC-USDT'), holding('ETH-USDT'));
+      const context = await store.context(exchange, { 'BTC-USDT': 101, 'ETH-USDT': 102 });
+      expect(context.managedPositions?.map(item => item.symbol)).toEqual(['BTC-USDT', 'ETH-USDT']);
+      expect(context.unmanagedInventory).toEqual([]);
+      const restored = new InMemoryPositionMonitor(10_000, 0, 10_000, 3);
+      expect(restored.reconcileStartup({ ...exchange, positions: context.managedPositions! }, context).status)
+        .toBe('RESTORED');
+      expect((await restored.getOpenPositions()).map(item => item.protectionPlan.symbol))
+        .toEqual(['BTC-USDT', 'ETH-USDT']);
+    });
+  });
+
   it.each(['BTC-USDT', 'ETH-USDT'])('restores only the checkpoint-backed %s trade', async symbol => {
     await withStore(async store => {
       await savedPosition(store, symbol);
@@ -99,7 +125,7 @@ describe('AURA restart ownership classification', () => {
       const exchange = snapshot(holding('BTC-USDT'), holding('ETH-USDT'));
       exchange.recentFills = [{ symbol: 'BTC-USDT', orderId: 'o2', clientOrderId: 'aura150_2',
         quantity: 1, price: 100, timestamp: 150 }];
-      await expect(store.context(exchange, {})).rejects.toThrow('Multiple AURA ownership claims');
+      await expect(store.context(exchange, {})).rejects.toThrow('without a recovery checkpoint');
     });
   });
 

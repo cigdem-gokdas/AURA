@@ -10,6 +10,7 @@ const fraction = (value: unknown): value is number => finite(value) && value > 0
 
 function validConfig(config: RiskConfig): boolean {
   return Number.isSafeInteger(config.maxConcurrentPositions) && config.maxConcurrentPositions >= 1
+    && config.maxConcurrentPositions <= 5 && positive(config.minTradeNotionalUsd)
     && fraction(config.maxTotalExposurePct) && fraction(config.riskPerTradePct)
     && fraction(config.maxRiskPerTradePct) && config.riskPerTradePct <= config.maxRiskPerTradePct
     && fraction(config.maxPositionPct)
@@ -36,6 +37,7 @@ function validAccount(input: PreTradeRiskInput): boolean {
     && Number.isSafeInteger(account.consecutiveLosses) && account.consecutiveLosses >= 0
     && (account.lastLossTimestamp === null || (finite(account.lastLossTimestamp) && account.lastLossTimestamp <= timestamp))
     && finite(account.timestamp) && account.timestamp <= timestamp
+    && new Set(account.openPositions.map(position => position.symbol)).size === account.openPositions.length
     && account.openPositions.every(position => position.symbol.length > 0
       && positive(position.quantity) && positive(position.notional)
       && finite(position.exposurePct) && position.exposurePct >= 0 && position.exposurePct <= 1);
@@ -99,9 +101,20 @@ export function evaluateEntryRisk(input: PreTradeRiskInput): RiskGateResult {
   const singleCap = account.equity * config.maxPositionPct;
   const portfolioCap = account.equity * config.maxTotalExposurePct;
   const remainingExposure = portfolioCap - existingNotional;
+  const hardRiskCeiling = protection
+    ? account.equity * config.maxRiskPerTradePct * multiplier / protection.stopDistanceFraction : NaN;
+  const floor = config.minTradeNotionalUsd;
+  const floorNeeded = rawNotional < floor;
+  // A minimum-size exception may exceed the soft target only in NORMAL mode, never
+  // the configured hard per-trade risk limit or a portfolio/balance cap.
+  const floorAllowed = mode === 'NORMAL' && account.consecutiveLosses < 2
+    && floor <= Math.min(singleCap, remainingExposure, account.availableQuoteBalance, hardRiskCeiling);
   const sizingCeiling = Math.min(rawNotional, singleCap, remainingExposure, account.availableQuoteBalance);
-  const proposedNotional = input.requestedNotional ?? sizingCeiling;
+  const proposedNotional = input.requestedNotional ?? (floorNeeded && floorAllowed ? floor : sizingCeiling);
   const notionalValid = positive(proposedNotional) && Number.isFinite(proposedNotional);
+  const lotRoundingAllowance = floorNeeded && floorAllowed && positive(input.quantityStep)
+    ? input.quantityStep * market.referencePrice : 0;
+  const softRiskCeiling = floorNeeded && floorAllowed ? floor + lotRoundingAllowance : rawNotional;
   const llm = input.llmResult as { status?: unknown; decision?: unknown } | null;
   const llmReachable = llm !== null && typeof llm === 'object' && llm.status === 'SUCCESS';
   const parsedLlm = LlmDecisionSchema.safeParse(llmReachable ? llm?.decision : undefined);
@@ -134,11 +147,16 @@ export function evaluateEntryRisk(input: PreTradeRiskInput): RiskGateResult {
     : -Infinity;
   gate('COOLDOWN', timestamp >= lossPauseUntil && (input.cooldownUntil === null || timestamp >= input.cooldownUntil), 'Entry cooldown or three-loss pause active');
   gate('SINGLE_POSITION_CAP', notionalValid && proposedNotional <= singleCap
-    && proposedNotional <= rawNotional, 'Proposed notional exceeds single-position or per-trade risk cap');
+    && proposedNotional <= softRiskCeiling + 1e-9
+    && proposedNotional <= hardRiskCeiling + 1e-9,
+    'Proposed notional exceeds single-position or per-trade risk cap');
   gate('CROSS_SYMBOL_POSITION_CAP', account.openPositions.length < config.maxConcurrentPositions,
     `CROSS_SYMBOL_POSITION_CAP: ${account.openPositions.map(position => position.symbol).join(', ')} already open`);
   gate('TOTAL_EXPOSURE_CAP', notionalValid && existingNotional + proposedNotional <= portfolioCap,
     'Existing exposure plus proposed notional exceeds portfolio cap');
+  gate('MIN_TRADE_NOTIONAL', notionalValid && proposedNotional + 1e-9 >= floor
+    && (!floorNeeded || floorAllowed),
+    'MIN_TRADE_NOTIONAL: floor cannot fit position, total exposure, balance, or hard risk cap');
   gate('DAILY_LOSS', dailyLoss < config.hardDailyLossPct, 'Hard daily-loss threshold reached');
   gate('PEAK_DRAWDOWN', peakDrawdown < config.hardPeakDrawdownPct, 'Hard peak-drawdown threshold reached');
   gate('SYMBOL_MATCH', candidate !== null && candidate.symbol.length > 0 && candidate.symbol === market.symbol,
@@ -161,6 +179,7 @@ export function evaluateEntryRisk(input: PreTradeRiskInput): RiskGateResult {
   const failed = gates.find(result => result.name === 'CROSS_SYMBOL_POSITION_CAP' && result.status === 'FAIL')
     ?? gates.find(result => result.name === 'DAILY_LOSS' && result.status === 'FAIL')
     ?? gates.find(result => result.name === 'PEAK_DRAWDOWN' && result.status === 'FAIL')
+    ?? gates.find(result => result.name === 'MIN_TRADE_NOTIONAL' && result.status === 'FAIL')
     ?? gates.find(result => result.status === 'FAIL');
   const certificate: RiskCertificate = {
     requestedSymbol: candidate?.symbol ?? market.symbol,

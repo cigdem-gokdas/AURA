@@ -30,6 +30,7 @@ export interface JudgeSnapshot {
     liveArmed: boolean;
     riskMode: string | null;
     protectionMode: string | null;
+    protectionModes?: Readonly<Record<string, string>>;
     reconciliationPending: boolean;
     degradedReason: string | null;
   };
@@ -71,7 +72,9 @@ export class ReadOnlyExplainService {
         break;
       case 'WHY_NOT_TRADING':
         text = f.state !== 'LIVE' ? `AURA is ${f.state}; ${f.degradedReason ?? 'live readiness is not active'}.`
-          : f.openPositionSymbol ? `AURA already holds ${f.openPositionSymbol}; the one-position rule blocks new entries.`
+          : (f.openPositionSymbols?.length ?? (f.openPositionSymbol ? 1 : 0))
+            >= (f.maxConcurrentPositions ?? 1)
+            ? 'The managed-position cap is full; new entries are blocked.'
             : f.selectedSymbol ? 'The selected proposal did not become an approved execution.'
               : 'No eligible entry was found in the latest cycle.';
         break;
@@ -79,11 +82,15 @@ export class ReadOnlyExplainService {
         text = `Risk mode ${state.safety.riskMode ?? 'unavailable'}; drawdown ${f.equity?.currentDrawdownPct ?? 'unavailable'}%; certificate ${state.reasoning.riskCertificate?.verdict ?? 'none'}.`;
         break;
       case 'CURRENT_POSITION':
-        text = f.position ? `${f.position.symbol}: quantity ${f.position.quantity}, entry ${f.position.entryPrice}, mark ${f.position.markPrice}.`
+        text = f.positions?.length ? f.positions.map(position =>
+          `${position.symbol}: quantity ${position.quantity}, entry ${position.entryPrice}, mark ${position.markPrice}.`).join(' ')
+          : f.position ? `${f.position.symbol}: quantity ${f.position.quantity}, entry ${f.position.entryPrice}, mark ${f.position.markPrice}.`
           : 'No open position is recorded.';
         break;
       case 'CURRENT_PROTECTION':
-        text = f.position ? `${f.position.symbol} stop ${f.position.stopPrice}; mode ${state.safety.protectionMode ?? 'unavailable'}.`
+        text = f.positions?.length ? f.positions.map(position =>
+          `${position.symbol} stop ${position.stopPrice}; mode ${position.protectionMode ?? 'unavailable'}.`).join(' ')
+          : f.position ? `${f.position.symbol} stop ${f.position.stopPrice}; mode ${state.safety.protectionMode ?? 'unavailable'}.`
           : 'No position requires protection.';
         break;
       case 'MCP_EVIDENCE':

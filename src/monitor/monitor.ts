@@ -38,7 +38,7 @@ function protectionState(plan: ProtectionPlan, entryPrice: number, timestamp: nu
 }
 
 export class InMemoryPositionMonitor implements PositionMonitor {
-  private position: OpenPosition | null = null;
+  private readonly positions = new Map<string, OpenPosition>();
   private cashBalance: number;
   private availableQuoteBalance: number;
   private dayStartEquity: number;
@@ -54,9 +54,11 @@ export class InMemoryPositionMonitor implements PositionMonitor {
   private readonly seenFills = new Set<string>();
   private memory: DecisionMemorySummary[] = [];
 
-  constructor(readonly startingEquity: number, timestamp: number, availableQuoteBalance = startingEquity) {
+  constructor(readonly startingEquity: number, timestamp: number, availableQuoteBalance = startingEquity,
+    readonly maxConcurrentPositions = 3) {
     if (!positive(startingEquity) || !finite(timestamp) || timestamp < 0
-      || !finite(availableQuoteBalance) || availableQuoteBalance < 0) {
+      || !finite(availableQuoteBalance) || availableQuoteBalance < 0
+      || !Number.isSafeInteger(maxConcurrentPositions) || maxConcurrentPositions < 1) {
       throw new RangeError('Invalid monitor starting state');
     }
     this.cashBalance = startingEquity;
@@ -67,7 +69,7 @@ export class InMemoryPositionMonitor implements PositionMonitor {
   }
 
   private currentEquity(): number {
-    return this.cashBalance + (this.position ? this.position.quantity * this.position.markPrice : 0);
+    return this.cashBalance + [...this.positions.values()].reduce((sum, item) => sum + item.quantity * item.markPrice, 0);
   }
 
   private rollDay(timestamp: number): void {
@@ -84,8 +86,13 @@ export class InMemoryPositionMonitor implements PositionMonitor {
     this.maximumDrawdown = Math.max(this.maximumDrawdown, drawdown);
   }
 
-  async getOpenPosition(): Promise<OpenPosition | null> {
-    return copyPosition(this.position);
+  async getOpenPosition(symbol?: string): Promise<OpenPosition | null> {
+    return copyPosition(symbol ? this.positions.get(symbol) ?? null
+      : this.positions.values().next().value ?? null);
+  }
+
+  async getOpenPositions(): Promise<readonly OpenPosition[]> {
+    return [...this.positions.values()].map(item => copyPosition(item)!);
   }
 
   async getEquitySnapshot(): Promise<EquitySnapshot> {
@@ -94,12 +101,13 @@ export class InMemoryPositionMonitor implements PositionMonitor {
     return {
       startingEquity: this.startingEquity, currentEquity, peakEquity: this.peakEquity,
       equity: currentEquity, availableQuoteBalance: this.availableQuoteBalance,
-      unrealizedPnl: this.position?.unrealizedPnl ?? 0,
+      unrealizedPnl: [...this.positions.values()].reduce((sum, item) => sum + item.unrealizedPnl, 0),
       realizedPnlToday: this.realizedPnlToday, dailyPnl,
       dailyReturn: this.dayStartEquity > 0 ? dailyPnl / this.dayStartEquity : 0,
       currentDrawdown: this.peakEquity > 0 ? Math.max(0, (this.peakEquity - currentEquity) / this.peakEquity) : 0,
       maximumDrawdown: this.maximumDrawdown,
-      openPositionSymbol: this.position?.symbol ?? null, timestamp: this.timestamp,
+      openPositionSymbol: this.positions.size === 1 ? this.positions.keys().next().value ?? null : null,
+      openPositionSymbols: [...this.positions.keys()], timestamp: this.timestamp,
     };
   }
 
@@ -119,7 +127,7 @@ export class InMemoryPositionMonitor implements PositionMonitor {
   processFill(fill: Fill, policy?: FillPolicy): FillProcessingResult {
     const result = (status: FillProcessingResult['status'], closedTradePnl: number | null = null,
       closedTradeOutcomeR: number | null = null): FillProcessingResult => ({
-      status, position: copyPosition(this.position), closedTradePnl, closedTradeOutcomeR,
+      status, position: copyPosition(this.positions.get(fill.symbol) ?? null), closedTradePnl, closedTradeOutcomeR,
     });
     if (!fill.symbol || !fill.fillId || !positive(fill.quantity) || !positive(fill.price)
       || !finite(fill.fee) || fill.fee < 0 || !finite(fill.timestamp)
@@ -128,9 +136,9 @@ export class InMemoryPositionMonitor implements PositionMonitor {
     }
     const fillKey = `${fill.symbol}:${fill.fillId}`;
     if (this.seenFills.has(fillKey)) return result('DUPLICATE_FILL');
-    const current = this.position;
+    const current = this.positions.get(fill.symbol) ?? null;
     if (fill.side === 'BUY') {
-      if (current && current.symbol !== fill.symbol) return result('SYMBOL_CONFLICT');
+      if (!current && this.positions.size >= this.maxConcurrentPositions) return result('SYMBOL_CONFLICT');
       if (current && !policy?.allowSameSymbolIncrease) return result('SAME_SYMBOL_INCREASE_NOT_ALLOWED');
       const plan = policy?.protectionPlan ?? null;
       if (!validProtection(fill.symbol, plan) || policy?.protectionMode !== plan.protectionMode) {
@@ -140,7 +148,7 @@ export class InMemoryPositionMonitor implements PositionMonitor {
       this.cashBalance -= fill.quantity * fill.price + fill.fee;
       this.availableQuoteBalance -= fill.quantity * fill.price + fill.fee;
       if (!current) {
-        this.position = {
+        this.positions.set(fill.symbol, {
           symbol: fill.symbol, quantity: fill.quantity, weightedAverageEntryPrice: fill.price,
           markPrice: fill.price, referencePrice: fill.price,
           realizedPnl: 0, unrealizedPnl: -fill.fee, tradePerformanceComplete: true,
@@ -152,13 +160,13 @@ export class InMemoryPositionMonitor implements PositionMonitor {
           entryOrderId: fill.exchangeOrderId || null,
           entryClientOrderId: fill.clientOrderId || null,
           attachedProtectionIds: [...(policy.entryProtectionIds ?? [])],
-        };
+        });
       } else {
         const quantity = current.quantity + fill.quantity;
         const weightedAverageEntryPrice =
           (current.quantity * current.weightedAverageEntryPrice + fill.quantity * fill.price) / quantity;
         const entryFeeBalance = current.entryFeeBalance + fill.fee;
-        this.position = {
+        this.positions.set(fill.symbol, {
           ...current, quantity, weightedAverageEntryPrice,
           markPrice: fill.price, referencePrice: fill.price,
           unrealizedPnl: (fill.price - weightedAverageEntryPrice) * quantity - entryFeeBalance,
@@ -166,7 +174,7 @@ export class InMemoryPositionMonitor implements PositionMonitor {
           updatedAt: fill.timestamp, protectionPlan: { ...plan },
           protectionMode: policy.protectionMode,
           protection: protectionState(plan, weightedAverageEntryPrice, fill.timestamp),
-        };
+        });
       }
     } else {
       if (!current || current.symbol !== fill.symbol) return result('NO_MATCHING_POSITION');
@@ -186,12 +194,12 @@ export class InMemoryPositionMonitor implements PositionMonitor {
         return result('APPLIED', closed.closedTradePnl, closed.closedTradeOutcomeR);
       }
       const entryFeeBalance = current.entryFeeBalance - entryFeeShare;
-      this.position = {
+      this.positions.set(fill.symbol, {
         ...current, quantity: remaining, markPrice: fill.price, referencePrice: fill.price,
         realizedPnl: current.realizedPnl + realized,
         unrealizedPnl: (fill.price - current.weightedAverageEntryPrice) * remaining - entryFeeBalance,
         entryFeeBalance, updatedAt: fill.timestamp,
-      };
+      });
     }
     this.timestamp = fill.timestamp;
     this.seenFills.add(fillKey);
@@ -205,7 +213,7 @@ export class InMemoryPositionMonitor implements PositionMonitor {
     const closedTradePnl = current.tradePerformanceComplete ? netSinceTracking : null;
     const closedTradeOutcomeR = closedTradePnl !== null && current.riskCapital > 0
       ? closedTradePnl / current.riskCapital : null;
-    this.position = null;
+    this.positions.delete(current.symbol);
     this.completedTrades += 1;
     if (closedTradePnl !== null && closedTradePnl > 0) {
       this.winningTrades += 1; this.consecutiveWins += 1; this.consecutiveLosses = 0;
@@ -227,9 +235,9 @@ export class InMemoryPositionMonitor implements PositionMonitor {
   closeResidualDust(symbol: string, maxQuantity: number, timestamp: number): FillProcessingResult {
     const result = (status: FillProcessingResult['status'], closedTradePnl: number | null = null,
       closedTradeOutcomeR: number | null = null): FillProcessingResult => ({
-      status, position: copyPosition(this.position), closedTradePnl, closedTradeOutcomeR,
+      status, position: copyPosition(this.positions.get(symbol) ?? null), closedTradePnl, closedTradeOutcomeR,
     });
-    const current = this.position;
+    const current = this.positions.get(symbol) ?? null;
     if (!current || current.symbol !== symbol) return result('NO_MATCHING_POSITION');
     if (!positive(maxQuantity) || current.quantity >= maxQuantity || !finite(timestamp)
       || timestamp < this.timestamp) return result('INVALID_FILL');
@@ -241,19 +249,19 @@ export class InMemoryPositionMonitor implements PositionMonitor {
   }
 
   updateMark(symbol: string, price: number, timestamp: number): void {
-    const position = this.position;
+    const position = this.positions.get(symbol) ?? null;
     if (!position) throw new Error('No open position');
     if (position.symbol !== symbol) throw new MonitorSymbolError(symbol, position.symbol);
     if (!positive(price) || !finite(timestamp) || timestamp < this.timestamp) {
       throw new RangeError('Invalid mark price or timestamp');
     }
     this.rollDay(timestamp);
-    this.position = {
+    this.positions.set(symbol, {
       ...position, markPrice: price, referencePrice: price,
       unrealizedPnl: (price - position.weightedAverageEntryPrice) * position.quantity
         - position.entryFeeBalance,
       updatedAt: timestamp,
-    };
+    });
     this.timestamp = timestamp;
     this.updateEquityMetrics();
   }
@@ -274,35 +282,38 @@ export class InMemoryPositionMonitor implements PositionMonitor {
 
   reconcileStartup(snapshot: StartupExchangeSnapshot, context: StartupMonitorContext): StartupMonitorResult {
     const symbols = snapshot.positions.filter(item => item.quantity > 0).map(item => item.symbol);
-    const localSymbol = this.position?.symbol ?? null;
+    const localSymbol = this.positions.size === 1 ? this.positions.keys().next().value ?? null : null;
     const response = (status: StartupMonitorResult['status'], reason: string): StartupMonitorResult => ({
       status, reason, exchangePositionSymbols: symbols,
-      localPositionSymbol: localSymbol, position: copyPosition(this.position),
+      localPositionSymbol: localSymbol, position: copyPosition(this.positions.values().next().value ?? null),
+      positions: [...this.positions.values()].map(item => copyPosition(item)!),
     });
     if (!positive(snapshot.totalEquityUsd) || !finite(snapshot.timestamp)
-      || snapshot.timestamp < this.timestamp || snapshot.positions.length > 1
+      || snapshot.timestamp < this.timestamp || snapshot.positions.length > this.maxConcurrentPositions
+      || new Set(symbols).size !== symbols.length
       || snapshot.positions.some(item => !item.symbol || !positive(item.quantity))) {
-      return response('INVALID_SNAPSHOT', 'Invalid or multi-position exchange snapshot');
+      return response('INVALID_SNAPSHOT', 'Invalid or over-cap exchange snapshot');
     }
-    const exchangePosition = snapshot.positions[0] ?? null;
-    if (localSymbol && localSymbol !== (exchangePosition?.symbol ?? null)) {
-      return response('DISCREPANCY', `Local ${localSymbol} differs from exchange ${exchangePosition?.symbol ?? 'FLAT'}`);
+    if (this.positions.size > 0 && (this.positions.size !== snapshot.positions.length
+      || [...this.positions.keys()].some(symbol => !symbols.includes(symbol)))) {
+      return response('DISCREPANCY', 'Local managed-position symbols differ from exchange');
     }
-    if (localSymbol && exchangePosition && this.position?.quantity !== exchangePosition.quantity) {
-      return response('DISCREPANCY', 'Local and exchange quantities differ');
-    }
-    if (localSymbol && exchangePosition && positive(exchangePosition.averageEntryPrice)
-      && this.position?.weightedAverageEntryPrice !== exchangePosition.averageEntryPrice) {
-      return response('DISCREPANCY', 'Local and exchange average entry prices differ');
+    for (const exchangePosition of snapshot.positions) {
+      const local = this.positions.get(exchangePosition.symbol);
+      if (local && (local.quantity !== exchangePosition.quantity
+        || (positive(exchangePosition.averageEntryPrice)
+          && local.weightedAverageEntryPrice !== exchangePosition.averageEntryPrice))) {
+        return response('DISCREPANCY', `Local and exchange ${exchangePosition.symbol} quantities or entry prices differ`);
+      }
     }
     const quoteBalance = snapshot.balances.find(item => item.currency === 'USDT');
     if (quoteBalance && (!finite(quoteBalance.available) || quoteBalance.available < 0)) {
       return response('INVALID_SNAPSHOT', 'Invalid quote balance');
     }
-    let restored: OpenPosition | null = null;
-    if (exchangePosition) {
+    const restored = new Map<string, OpenPosition>();
+    for (const exchangePosition of snapshot.positions) {
       const symbol = exchangePosition.symbol;
-      const matchingLocal = this.position?.symbol === symbol ? this.position : null;
+      const matchingLocal = this.positions.get(symbol) ?? null;
       const reference = context.referencePrices[symbol];
       const openedAt = matchingLocal?.openedAt ?? context.openedAtBySymbol[symbol];
       const plan = context.protectionPlans[symbol] ?? null;
@@ -312,13 +323,11 @@ export class InMemoryPositionMonitor implements PositionMonitor {
         || !validProtection(symbol, plan) || mode !== plan.protectionMode) {
         return response('INVALID_SNAPSHOT', 'Missing explicit price, opening time, cost basis, or symbol-matched protection');
       }
-      const cash = snapshot.totalEquityUsd - exchangePosition.quantity * reference;
-      if (!finite(cash) || cash < 0) return response('INVALID_SNAPSHOT', 'Exchange equity cannot cover marked position');
       const links = matchingLocal
         ? { entryOrderId: matchingLocal.entryOrderId ?? null, entryClientOrderId: matchingLocal.entryClientOrderId ?? null,
           attachedProtectionIds: matchingLocal.attachedProtectionIds ?? [] }
         : context.exchangeLinks?.[symbol] ?? null;
-      restored = {
+      restored.set(symbol, {
         ...(links ? { entryOrderId: links.entryOrderId, entryClientOrderId: links.entryClientOrderId,
           attachedProtectionIds: [...links.attachedProtectionIds] } : {}),
         symbol, quantity: exchangePosition.quantity,
@@ -337,12 +346,14 @@ export class InMemoryPositionMonitor implements PositionMonitor {
           currentStopPrice: Math.max(matchingLocal.protection.currentStopPrice, plan.initialStopPrice),
           lastUpdatedAt: snapshot.timestamp,
         } : protectionState(plan, exchangePosition.averageEntryPrice, snapshot.timestamp),
-      };
-      this.cashBalance = cash;
-    } else {
-      this.cashBalance = snapshot.totalEquityUsd;
+      });
     }
-    this.position = restored;
+    const cash = snapshot.totalEquityUsd - [...restored.values()]
+      .reduce((sum, item) => sum + item.quantity * item.markPrice, 0);
+    if (!finite(cash) || cash < 0) return response('INVALID_SNAPSHOT', 'Exchange equity cannot cover marked positions');
+    this.positions.clear();
+    for (const [symbol, item] of restored) this.positions.set(symbol, item);
+    this.cashBalance = cash;
     this.availableQuoteBalance = quoteBalance?.available ?? 0;
     this.dayStartEquity = snapshot.totalEquityUsd;
     this.realizedPnlToday = 0;

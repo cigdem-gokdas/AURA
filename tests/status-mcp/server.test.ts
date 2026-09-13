@@ -100,7 +100,21 @@ describe('read-only AURA status MCP', () => {
       expect(invalidSymbol.isError).toBe(true);
       await expect(client.callTool({ name: 'place_order', arguments: { side: 'buy' } })).rejects.toThrow();
       expect(JSON.stringify(snapshot)).toBe(before);
-      expect(read).not.toHaveBeenCalled();
+      expect(read).toHaveBeenCalledTimes(1);
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('accepts any selected liquid-universe symbol from the read-only snapshot', async () => {
+    const snapshot = fixture();
+    snapshot.functional.symbols = ['SOL-USDT'];
+    snapshot.functional.markets = { 'SOL-USDT': { close: 150, regime: 'RANGE',
+      candidateAction: 'HOLD', oqs: 25, edgeCostRatio: 1, spreadBps: 2,
+      atrPctPercentile: 0.3 } };
+    const { server, client } = await connect(snapshot);
+    try {
+      const result = (await client.callTool({ name: 'get_market_snapshot',
+        arguments: { symbol: 'SOL-USDT' } })).structuredContent;
+      expect(result).toMatchObject({ markets: [{ symbol: 'SOL-USDT', price: 150 }] });
     } finally { await client.close(); await server.close(); }
   });
 

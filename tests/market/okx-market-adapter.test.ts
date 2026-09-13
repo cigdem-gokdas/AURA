@@ -9,6 +9,7 @@ import { OkxMarketAdapter } from '../../src/market/okx-market-adapter.js';
 
 const toolNames = [
   'market_get_ticker',
+  'market_get_tickers',
   'market_get_candles',
   'market_get_orderbook',
   'market_get_instruments',
@@ -78,6 +79,27 @@ function ticker(symbol: string, last = '100') {
 }
 
 describe('OkxMarketAdapter', () => {
+  it('normalizes bulk spot quote volume from ATK without mixing base volume', async () => {
+    const connector = new FakeConnector();
+    connector.responses.set('market_get_tickers', () => envelope([
+      { instId: 'BTC-USDT', volCcy24h: '12345678.5', vol24h: '42', ts: '1789171200000' },
+      { instId: 'MEME-USDT', volCcy24h: 'bad', vol24h: '999999', ts: '1789171200000' },
+    ]));
+    connector.responses.set('market_get_instruments', () => envelope([
+      { instId: 'BTC-USDT', state: 'live' }, { instId: 'MEME-USDT', state: 'suspend' },
+    ]));
+    const market = new OkxMarketAdapter(connector);
+    expect(await market.getSpotTickers24h()).toEqual([
+      { symbol: 'BTC-USDT', quoteVolume24h: 12_345_678.5, timestamp: 1_789_171_200_000 },
+      { symbol: 'MEME-USDT', quoteVolume24h: 0, timestamp: 1_789_171_200_000 },
+    ]);
+    expect(await market.getSpotInstrumentListings()).toEqual([
+      { symbol: 'BTC-USDT', state: 'live' }, { symbol: 'MEME-USDT', state: 'suspend' },
+    ]);
+    expect(connector.calls.map(call => call.args)).toEqual([
+      { instType: 'SPOT', demo: true }, { instType: 'SPOT', demo: true },
+    ]);
+  });
   it('normalizes BTC and ETH tickers and safely interleaves BTC → ETH → BTC', async () => {
     const connector = new FakeConnector();
     connector.responses.set('market_get_ticker', ({ instId }) =>

@@ -19,8 +19,8 @@ export function createStatusMcpServer(provider: AuraStatusProvider): McpServer {
   server.registerTool('get_recent_decisions', { description: 'Bounded compact decision history',
     inputSchema: z.object({ limit: z.number().int().min(1).max(20) }), annotations },
   async ({ limit }) => response(await provider.getRecentDecisions(limit)));
-  server.registerTool('get_market_snapshot', { description: 'Observed BTC/ETH market summaries',
-    inputSchema: z.object({ symbol: z.enum(['BTC-USDT', 'ETH-USDT']).optional() }), annotations },
+  server.registerTool('get_market_snapshot', { description: 'Observed liquid-universe market summaries',
+    inputSchema: z.object({ symbol: z.string().regex(/^[A-Z0-9]+-USDT$/).optional() }), annotations },
   async ({ symbol }) => response(await provider.getMarketSnapshot(symbol)));
   return server;
 }

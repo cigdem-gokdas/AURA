@@ -1,7 +1,7 @@
 import type { OkxToolDefinition } from './types.js';
 
 export type AtkCapability =
-  | 'MARKET_TICKER' | 'MARKET_CANDLES' | 'MARKET_ORDERBOOK' | 'MARKET_INSTRUMENT'
+  | 'MARKET_TICKER' | 'MARKET_TICKERS' | 'MARKET_CANDLES' | 'MARKET_ORDERBOOK' | 'MARKET_INSTRUMENT'
   | 'ACCOUNT_BALANCE' | 'ACCOUNT_FEE' | 'SPOT_PLACE_ORDER' | 'SPOT_QUERY_ORDER'
   | 'SPOT_QUERY_ORDERS' | 'SPOT_FILLS' | 'SPOT_QUERY_ALGO_ORDERS'
   | 'SPOT_CONDITIONAL_PROTECTION' | 'SPOT_OCO_PROTECTION'
@@ -9,7 +9,7 @@ export type AtkCapability =
   | 'NEWS_LATEST' | 'NEWS_SENTIMENT' | 'NEWS_CALENDAR' | 'SYSTEM_CAPABILITIES';
 
 const names: Readonly<Record<AtkCapability, string>> = {
-  MARKET_TICKER: 'market_get_ticker', MARKET_CANDLES: 'market_get_candles',
+  MARKET_TICKER: 'market_get_ticker', MARKET_TICKERS: 'market_get_tickers', MARKET_CANDLES: 'market_get_candles',
   MARKET_ORDERBOOK: 'market_get_orderbook', MARKET_INSTRUMENT: 'market_get_instruments',
   ACCOUNT_BALANCE: 'account_get_balance', ACCOUNT_FEE: 'account_get_trade_fee',
   SPOT_PLACE_ORDER: 'spot_place_order', SPOT_QUERY_ORDER: 'spot_get_order',
@@ -67,7 +67,7 @@ export class AtkCapabilityRegistry {
 }
 
 export const REQUIRED_READ_CAPABILITIES: readonly AtkCapability[] = [
-  'MARKET_TICKER', 'MARKET_CANDLES', 'MARKET_ORDERBOOK', 'MARKET_INSTRUMENT',
+  'MARKET_TICKER', 'MARKET_TICKERS', 'MARKET_CANDLES', 'MARKET_ORDERBOOK', 'MARKET_INSTRUMENT',
   'ACCOUNT_BALANCE', 'ACCOUNT_FEE', 'SPOT_QUERY_ORDERS', 'SPOT_FILLS',
 ];
 export const REQUIRED_WRITE_CAPABILITIES: readonly AtkCapability[] = ['SPOT_PLACE_ORDER'];

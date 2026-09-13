@@ -9,7 +9,8 @@ function envNumber(env: NodeJS.ProcessEnv, key: string, fallback: number): numbe
 export function riskConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RiskConfig {
   const spread = env.MAX_SPREAD_BPS;
   return {
-    maxConcurrentPositions: envNumber(env, 'MAX_CONCURRENT_POSITIONS', 1),
+    maxConcurrentPositions: envNumber(env, 'MAX_CONCURRENT_POSITIONS', 3),
+    minTradeNotionalUsd: envNumber(env, 'MIN_TRADE_NOTIONAL_USD', 5),
     maxTotalExposurePct: envNumber(env, 'MAX_TOTAL_EXPOSURE_PCT', 0.25),
     riskPerTradePct: envNumber(env, 'RISK_PER_TRADE_PCT', 0.005),
     maxRiskPerTradePct: envNumber(env, 'MAX_RISK_PER_TRADE_PCT', 0.0075),

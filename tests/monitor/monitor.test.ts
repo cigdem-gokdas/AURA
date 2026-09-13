@@ -46,6 +46,28 @@ function memory(symbol: string, timestamp: number, resultCategory: DecisionMemor
 }
 
 describe('symbol-aware monitor fills and performance', () => {
+  it('tracks three positions with independent marks, stops, exits and aggregate equity', async () => {
+    const monitor = new InMemoryPositionMonitor(10_000, start, 10_000, 3);
+    for (const [symbol, timestamp] of [['BTC-USDT', start], ['ETH-USDT', start + 1],
+      ['SOL-USDT', start + 2]] as const) {
+      expect(monitor.processFill(fill(symbol, 'BUY', 1, 100, 0, timestamp), policy(symbol)).status)
+        .toBe('APPLIED');
+    }
+    expect((await monitor.getOpenPositions()).map(item => item.symbol))
+      .toEqual(['BTC-USDT', 'ETH-USDT', 'SOL-USDT']);
+    monitor.updateMark('BTC-USDT', 90, start + 3);
+    monitor.updateMark('ETH-USDT', 120, start + 4);
+    expect((await monitor.getOpenPosition('SOL-USDT'))?.markPrice).toBe(100);
+    expect((await monitor.getOpenPosition('BTC-USDT'))?.protection.currentStopPrice).toBe(97);
+    expect((await monitor.getEquitySnapshot())).toMatchObject({ currentEquity: 10_010,
+      openPositionSymbols: ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'] });
+    expect(monitor.processFill(fill('ETH-USDT', 'SELL', 1, 120, 0, start + 5), undefined).status)
+      .toBe('APPLIED');
+    expect((await monitor.getOpenPositions()).map(item => item.symbol)).toEqual(['BTC-USDT', 'SOL-USDT']);
+    expect((await monitor.getOpenPosition('BTC-USDT'))?.quantity).toBe(1);
+    expect((await monitor.getOpenPosition('SOL-USDT'))?.quantity).toBe(1);
+  });
+
   it.each(['BTC-USDT', 'ETH-USDT'])('%s BUY opens the supplied symbol and preserves it through snapshots', async symbol => {
     const monitor = new InMemoryPositionMonitor(10_000, start);
     expect(monitor.processFill(fill(symbol, 'BUY'), policy(symbol)).status).toBe('APPLIED');
@@ -75,7 +97,7 @@ describe('symbol-aware monitor fills and performance', () => {
   });
 
   it('rejects cross-symbol BUY merging without mutating BTC state', async () => {
-    const monitor = new InMemoryPositionMonitor(10_000, start);
+    const monitor = new InMemoryPositionMonitor(10_000, start, 10_000, 1);
     monitor.processFill(fill('BTC-USDT', 'BUY'), policy('BTC-USDT'));
     const before = await monitor.getEquitySnapshot();
     expect(monitor.processFill(fill('ETH-USDT', 'BUY', 1, 100, 0, start + 1), policy('ETH-USDT')).status)

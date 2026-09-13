@@ -216,6 +216,25 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
+  it.each([[20, 'SUBMITTED'], [26, 'REJECTED']] as const)(
+    'honors exchange minimum lot %s through the hard notional floor (%s)', async (minimumSize, expected) => {
+      const h = harness();
+      h.market.getInstrumentMeta = vi.fn(async symbol => ({ symbol, instrumentId: symbol,
+        minOrderSize: minimumSize, quantityStep: 1, tickSize: 0.01 }));
+      expect((await h.agent.preflight()).passed).toBe(true);
+      expect(h.agent.activate()).toBe(true);
+      const result = await h.agent.runSlowCycle();
+      expect(result.status).toBe(expected);
+      if (expected === 'SUBMITTED') {
+        expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0].quantity).toBe(20);
+      } else {
+        expect(result.reason).toContain('MIN_TRADE_NOTIONAL');
+        expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+      }
+      await h.agent.shutdown();
+    },
+  );
+
   it('publishes HOLD without LLM or order, and ignores observer failure', async () => {
     const observer = vi.fn(() => { throw new Error('observer failure'); });
     const h = harness({ scores: { 'BTC-USDT': 0, 'ETH-USDT': 0 }, observer });
@@ -227,18 +246,23 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
   });
 
-  it.each(symbols)('reconstructs an exchange %s position and bypasses entry ranking and critic', async held => {
+  it.each(symbols)('reconstructs an exchange %s position while evaluating another symbol once', async held => {
     const h = harness({ held });
     const report = await h.agent.preflight();
     expect(report.positionSymbol).toBe(held);
     expect(report.passed).toBe(true);
     h.agent.activate();
-    expect((await h.agent.runSlowCycle()).status).toBe('MONITORING');
-    expect(h.evaluated).toEqual([held]);
-    expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
-    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    const result = await h.agent.runSlowCycle();
+    expect(result.status).toBe('SUBMITTED');
+    expect(result.selectedSymbol).not.toBe(held);
+    expect(h.evaluated.slice(-2)).toEqual(symbols);
+    expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
+    expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0]).toMatchObject({
+      symbol: result.selectedSymbol, side: 'BUY',
+    });
     await h.agent.runFastCycle();
-    expect(h.llm.evaluateSelectedCandidate).not.toHaveBeenCalled();
+    expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
     await h.agent.shutdown();
   });
 
@@ -669,7 +693,7 @@ describe('AURA orchestration', () => {
     }, 0);
   });
 
-  it('restores AURA-owned ETH while keeping BTC inventory outside the active position', async () => {
+  it('restores AURA-owned ETH while keeping BTC inventory outside managed ownership', async () => {
     await withRecoveryAgent(async (agent, h, store) => {
       await saveOwnedPosition(store, 'ETH-USDT');
       h.snapshot.positions = [
@@ -681,8 +705,12 @@ describe('AURA orchestration', () => {
       expect(report.positionSymbol).toBe('ETH-USDT');
       expect(report.unmanagedInventory).toMatchObject([{ symbol: 'BTC-USDT', quantity: 2 }]);
       expect(agent.activate()).toBe(true);
-      expect((await agent.runSlowCycle()).status).toBe('MONITORING');
-      expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+      expect((await agent.runSlowCycle()).status).toBe('SUBMITTED');
+      expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0]).toMatchObject({
+        symbol: 'BTC-USDT', side: 'BUY',
+      });
+      expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls
+        .some(([plan]) => plan.side === 'SELL')).toBe(false);
     });
   });
 
@@ -734,7 +762,7 @@ describe('AURA orchestration', () => {
       expect(report.passed).toBe(false);
       expect(report.readiness).toBe('BLOCKED');
       expect(report.checks.find(check => check.name === 'EXCHANGE_PREFLIGHT')?.detail)
-        .toContain('Multiple AURA ownership claims');
+        .toContain('without a recovery checkpoint');
       expect(agent.activate()).toBe(false);
       expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
     });
@@ -781,7 +809,7 @@ describe('AURA orchestration', () => {
     h.snapshot.positions = [{ symbol: 'ETH-USDT', quantity: 1, averageEntryPrice: 100, updatedAt: NOW }];
     const report = await h.agent.preflight();
     expect(report.passed).toBe(false);
-    expect(report.checks.find(check => check.name === 'MONITOR_RECONCILIATION')?.detail).toContain('differs');
+    expect(report.checks.find(check => check.name === 'MONITOR_RECONCILIATION')?.detail).toContain('differ');
     expect(h.agent.activate()).toBe(false);
     await h.agent.shutdown();
   });

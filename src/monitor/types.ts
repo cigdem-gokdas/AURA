@@ -52,6 +52,7 @@ export interface EquitySnapshot {
   currentDrawdown: number;
   maximumDrawdown: number;
   openPositionSymbol: string | null;
+  openPositionSymbols?: readonly string[];
   timestamp: number;
 }
 
@@ -123,10 +124,12 @@ export interface StartupMonitorResult {
   exchangePositionSymbols: readonly string[];
   localPositionSymbol: string | null;
   position: OpenPosition | null;
+  positions?: readonly OpenPosition[];
 }
 
 export interface PositionMonitor {
-  getOpenPosition(): Promise<OpenPosition | null>;
+  getOpenPosition(symbol?: string): Promise<OpenPosition | null>;
+  getOpenPositions?(): Promise<readonly OpenPosition[]>;
   getEquitySnapshot(): Promise<EquitySnapshot>;
   getPerformanceState(): Promise<PerformanceState>;
   processFill(fill: Fill, policy?: FillPolicy): FillProcessingResult;

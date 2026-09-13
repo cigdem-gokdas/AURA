@@ -5,8 +5,9 @@ export type RiskMode = 'NORMAL' | 'CAUTION' | 'DEFENSIVE' | 'LOCKDOWN';
 export type ProtectionMode = 'EXCHANGE_SIDE' | 'CLIENT_SIDE' | 'UNAVAILABLE';
 
 export interface RiskConfig {
-  /** The initial policy allows one position across all tracked symbols. */
+  /** Maximum number of independently protected AURA-managed spot positions. */
   maxConcurrentPositions: number;
+  minTradeNotionalUsd: number;
   maxTotalExposurePct: number;
   riskPerTradePct: number;
   maxRiskPerTradePct: number;
@@ -91,6 +92,8 @@ export interface PreTradeRiskInput {
   cooldownUntil: number | null;
   /** Optional execution request; if supplied, it must not exceed deterministic sizing. */
   requestedNotional?: number;
+  /** Exchange lot increment for validating the smallest round-up above the floor. */
+  quantityStep?: number;
   protectionMode: ProtectionMode;
 }
 
@@ -115,7 +118,7 @@ export type RiskGateName =
   | 'SINGLE_POSITION_CAP' | 'CROSS_SYMBOL_POSITION_CAP' | 'TOTAL_EXPOSURE_CAP'
   | 'DAILY_LOSS' | 'PEAK_DRAWDOWN' | 'SYMBOL_MATCH' | 'NO_AVERAGE_DOWN'
   | 'AVAILABLE_BALANCE' | 'PROTECTION_VALID' | 'DUPLICATE_CLIENT_ORDER_ID'
-  | 'KILL_SWITCH' | 'RISK_MODE';
+  | 'KILL_SWITCH' | 'RISK_MODE' | 'MIN_TRADE_NOTIONAL';
 
 export interface RiskGate {
   name: RiskGateName;

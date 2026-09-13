@@ -9,6 +9,18 @@ export interface Ticker {
   timestamp: number;
 }
 
+/** OKX spot volCcy24h is denominated in the quote asset (USDT here). */
+export interface SpotTicker24h {
+  symbol: string;
+  quoteVolume24h: number;
+  timestamp: number;
+}
+
+export interface SpotInstrumentListing {
+  symbol: string;
+  state: string;
+}
+
 export interface Candle {
   symbol: string;
   timestamp: number;
@@ -99,6 +111,9 @@ export interface CommandRunner {
 
 /** An abstraction only; no exchange calls exist in this scaffold. */
 export interface MarketAdapter {
+  /** Production ATK adapter exposes these read-only bulk discovery calls. */
+  getSpotTickers24h?(): Promise<readonly SpotTicker24h[]>;
+  getSpotInstrumentListings?(): Promise<readonly SpotInstrumentListing[]>;
   getTicker(symbol: string): Promise<Ticker>;
   getCandles(
     symbol: string,

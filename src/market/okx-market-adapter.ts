@@ -11,6 +11,8 @@ import type {
   OrderBookSnapshot,
   RecentSpotFill,
   SpotFeeRate,
+  SpotInstrumentListing,
+  SpotTicker24h,
   Ticker,
   TradingBalanceSnapshot,
 } from './types.js';
@@ -143,6 +145,30 @@ export class OkxMarketAdapter implements MarketAdapter {
       instId: text(symbol, 'symbol'),
       demo: this.connector.profile === 'demo',
     };
+  }
+
+  async getSpotTickers24h(): Promise<readonly SpotTicker24h[]> {
+    const rows = toolRows(await this.call('MARKET_TICKERS', {
+      instType: 'SPOT', demo: this.connector.profile === 'demo',
+    }));
+    return rows.map(item => {
+      const row = record(item, 'spot ticker');
+      const volume = Number(row.volCcy24h);
+      const time = Number(row.ts);
+      return { symbol: text(row.instId, 'instrument ID'),
+        quoteVolume24h: Number.isFinite(volume) && volume >= 0 ? volume : 0,
+        timestamp: Number.isSafeInteger(time) && time >= 1_000_000_000_000 ? time : 0 };
+    });
+  }
+
+  async getSpotInstrumentListings(): Promise<readonly SpotInstrumentListing[]> {
+    const rows = toolRows(await this.call('MARKET_INSTRUMENT', {
+      instType: 'SPOT', demo: this.connector.profile === 'demo',
+    }));
+    return rows.map(item => {
+      const row = record(item, 'spot instrument');
+      return { symbol: text(row.instId, 'instrument ID'), state: text(row.state, 'instrument state') };
+    });
   }
 
   async getTicker(symbol: string): Promise<Ticker> {

@@ -3,7 +3,11 @@ import { riskConfigFromEnv } from '../risk/config.js';
 import type { RiskConfig } from '../risk/types.js';
 
 export interface AgentConfig {
-  symbols: readonly string[];
+  /** Agent-owned tracked array is replaced only after a successful READ-lane selection. */
+  symbols: string[];
+  universeSize: number;
+  min24hQuoteVolumeUsdt: number;
+  universeRefreshMs: number;
   profile: 'demo' | 'live';
   connectorMode: 'mcp';
   liveTradingArmed: boolean;
@@ -22,7 +26,8 @@ export interface AgentConfig {
 }
 
 export function parseSymbols(value: string | undefined): string[] {
-  const symbols = (value ?? 'BTC-USDT,ETH-USDT').split(',').map(item => item.trim());
+  if (value === undefined) return [];
+  const symbols = value.split(',').map(item => item.trim());
   if (!symbols.length || symbols.some(symbol => !/^[A-Z0-9]+-[A-Z0-9]+$/.test(symbol))
     || new Set(symbols).size !== symbols.length) throw new Error('SYMBOLS must be a nonempty, unique spot-symbol list');
   return symbols;
@@ -40,7 +45,10 @@ export function validRiskConfig(config: RiskConfig): boolean {
     config.hardDailyLossPct, config.hardPeakDrawdownPct, config.maxAtrPercentile];
   const positive = [config.maxDataAgeMs, config.maxSpreadBps, config.minEdgeCostRatio,
     config.initialStopAtrMultiplier, config.breakEvenTriggerR, config.trailingActivationR, config.takeProfitR];
-  return config.maxConcurrentPositions === 1 && fractions.every(x => typeof x === 'number' && Number.isFinite(x) && x > 0 && x <= 1)
+  return Number.isSafeInteger(config.maxConcurrentPositions) && config.maxConcurrentPositions >= 1
+    && config.maxConcurrentPositions <= 5 && Number.isFinite(config.minTradeNotionalUsd)
+    && config.minTradeNotionalUsd > 0
+    && fractions.every(x => typeof x === 'number' && Number.isFinite(x) && x > 0 && x <= 1)
     && positive.every(x => typeof x === 'number' && Number.isFinite(x) && x > 0)
     && config.riskPerTradePct <= config.maxRiskPerTradePct
     && config.softDrawdownPct < config.defensiveDrawdownPct
@@ -53,6 +61,10 @@ export function validRiskConfig(config: RiskConfig): boolean {
 
 export function agentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig {
   const symbols = parseSymbols(env.SYMBOLS);
+  const universeSize = positiveInteger(env.UNIVERSE_SIZE, 12, 'UNIVERSE_SIZE');
+  const min24hQuoteVolumeUsdt = Number(env.MIN_24H_QUOTE_VOLUME_USDT ?? 10_000_000);
+  if (universeSize > 30 || !Number.isFinite(min24hQuoteVolumeUsdt) || min24hQuoteVolumeUsdt <= 0)
+    throw new Error('Invalid liquid universe configuration');
   if (env.OKX_CONNECTOR_MODE !== 'mcp') throw new Error('OKX_CONNECTOR_MODE must be mcp');
   if (env.OKX_PROFILE !== 'demo' && env.OKX_PROFILE !== 'live') throw new Error('OKX_PROFILE must be demo or live');
   if (env.LIVE_TRADING_ARMED !== undefined && env.LIVE_TRADING_ARMED !== 'true' && env.LIVE_TRADING_ARMED !== 'false')
@@ -64,7 +76,10 @@ export function agentConfigFromEnv(env: NodeJS.ProcessEnv = process.env): AgentC
   if (env.ATK_CONTEXT_PULSE !== undefined && env.ATK_CONTEXT_PULSE !== 'true' && env.ATK_CONTEXT_PULSE !== 'false')
     throw new Error('ATK_CONTEXT_PULSE must be true or false');
   return {
-    symbols, profile: env.OKX_PROFILE, connectorMode: 'mcp',
+    symbols, universeSize,
+    min24hQuoteVolumeUsdt,
+    universeRefreshMs: positiveInteger(env.UNIVERSE_REFRESH_MS, 86_400_000, 'UNIVERSE_REFRESH_MS'),
+    profile: env.OKX_PROFILE, connectorMode: 'mcp',
     liveTradingArmed: env.LIVE_TRADING_ARMED === 'true',
     demoSmokeArmFlagExplicitlyFalse: env.LIVE_TRADING_ARMED === 'false',
     liveEntryProtectionVerified: env.LIVE_ENTRY_PROTECTION_VERIFIED === 'true', primaryBar: '3m',

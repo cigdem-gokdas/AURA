@@ -139,6 +139,7 @@ describe('deterministic entry risk', () => {
   it('rejects BTC when ETH is open and ETH when BTC is open, independent of loop ranking', () => {
     for (const [selected, held] of [['BTC-USDT', 'ETH-USDT'], ['ETH-USDT', 'BTC-USDT']] as const) {
       const entry = input(selected);
+      entry.config = { ...entry.config, maxConcurrentPositions: 1 };
       entry.account = { ...entry.account, openPositions: [position(held)] };
       const result = evaluateEntryRisk(entry);
       expect(result.decision.rejectionCategory).toBe('CROSS_SYMBOL_POSITION_CAP');
@@ -229,9 +230,50 @@ describe('deterministic entry risk', () => {
     if (a.plan && b.plan) expect(a.plan.estimatedNotional).toBe(b.plan.estimatedNotional);
   });
 
-  it('loads independent one-position and portfolio caps from environment', () => {
+  it('raises a small-account order to the floor only within hard risk and exposure caps', () => {
+    const entry = input('SOL-USDT');
+    entry.account = { ...entry.account, equity: 30, dayStartEquity: 30, peakEquity: 30,
+      availableQuoteBalance: 30 };
+    entry.config = { ...entry.config, minTradeNotionalUsd: 6 };
+    const result = evaluateEntryRisk(entry);
+    expect(result.decision.approved).toBe(true);
+    expect(result.plan?.estimatedNotional).toBe(6);
+    expect(result.certificate.gates.find(item => item.name === 'MIN_TRADE_NOTIONAL')?.status).toBe('PASS');
+  });
+
+  it('rejects the floor clearly when position, total-exposure, or hard-risk capacity is too small', () => {
+    const entry = input('SOL-USDT');
+    entry.account = { ...entry.account, equity: 30, dayStartEquity: 30, peakEquity: 30,
+      availableQuoteBalance: 30 };
+    entry.config = { ...entry.config, minTradeNotionalUsd: 6, maxPositionPct: 0.15 };
+    assertRejected(entry, 'MIN_TRADE_NOTIONAL');
+    entry.config = { ...entry.config, maxPositionPct: 0.25 };
+    entry.account = { ...entry.account, openPositions: [{ symbol: 'ETH-USDT', quantity: 0.02,
+      notional: 2, exposurePct: 2 / 30 }] };
+    assertRejected(entry, 'MIN_TRADE_NOTIONAL');
+    entry.account = { ...entry.account, openPositions: [] };
+    entry.market = { ...entry.market, atr: 4 };
+    assertRejected(entry, 'MIN_TRADE_NOTIONAL');
+  });
+
+  it('counts separate positions and enforces aggregate exposure before a third entry', () => {
+    const entry = input('SOL-USDT');
+    entry.account = { ...entry.account, openPositions: [position('BTC-USDT', 1_000),
+      position('ETH-USDT', 1_000)] };
+    const allowed = evaluateEntryRisk(entry);
+    expect(allowed.decision.approved).toBe(true);
+    expect(allowed.plan?.estimatedNotional).toBeCloseTo(500);
+    entry.account = { ...entry.account, openPositions: [position('BTC-USDT', 1_250),
+      position('ETH-USDT', 1_248)] };
+    expect(evaluateEntryRisk(entry).decision.rejectionCategory).toBe('MIN_TRADE_NOTIONAL');
+    entry.account = { ...entry.account, openPositions: [position('BTC-USDT', 100),
+      position('ETH-USDT', 100), position('XRP-USDT', 100)] };
+    expect(evaluateEntryRisk(entry).decision.rejectionCategory).toBe('CROSS_SYMBOL_POSITION_CAP');
+  });
+
+  it('loads independent position-count and portfolio caps from environment', () => {
     const config = riskConfigFromEnv({});
-    expect(config.maxConcurrentPositions).toBe(1);
+    expect(config.maxConcurrentPositions).toBe(3);
     expect(config.maxTotalExposurePct).toBe(0.25);
     expect(config.maxPositionPct).toBe(0.25);
     expect(riskConfigFromEnv({ MAX_CONCURRENT_POSITIONS: '2', MAX_TOTAL_EXPOSURE_PCT: '0.30', MAX_POSITION_PCT: '0.10' }))

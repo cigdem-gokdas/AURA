@@ -40,7 +40,9 @@ export function createProductionAgent(env: NodeJS.ProcessEnv = process.env,
       await smokeRecovery.assertClear();
       return recovery.context(snapshot, references);
     },
+    recoverySymbols: () => recovery.ownedSymbols(),
     persistPosition: position => recovery.save(position),
+    persistPositions: positions => recovery.savePositions(positions),
     killSwitch: () => env.AURA_KILL_SWITCH === 'true' });
   return agent;
 }
@@ -51,6 +53,14 @@ function printReport(report: PreflightReport): void {
   for (const check of report.checks) process.stdout.write(`${check.passed ? 'PASS' : 'FAIL'} ${check.name}: ${check.detail}\n`);
   for (const holding of report.unmanagedInventory ?? []) process.stdout.write(
     `UNMANAGED_INVENTORY ${holding.symbol} quantity=${holding.quantity}\n`);
+  if (report.universe) {
+    process.stdout.write(`UNIVERSE threshold24hUSDT=${report.universe.minimumQuoteVolume24h} `
+      + `excludedLiquidity=${report.universe.excludedForLiquidity} `
+      + `excludedStatus=${report.universe.excludedForStatus} `
+      + `excludedStaleness=${report.universe.excludedForStaleness}\n`);
+    for (const item of report.universe.selected) process.stdout.write(
+      `UNIVERSE_PAIR ${item.symbol} volume24hUSDT=${item.quoteVolume24h}\n`);
+  }
   process.stdout.write(`${report.passed ? 'PASS' : 'FAIL'} PREFLIGHT readiness=${report.readiness ?? 'BLOCKED'} state=${report.state} position=${report.positionSymbol ?? 'FLAT'} blockers=${report.blockers?.join(',') || 'none'}\n`);
 }
 
@@ -73,7 +83,8 @@ export async function main(command: string | undefined = process.argv[2], env: N
     void audit.append(event).catch(auditFailure);
   };
   record({ eventType: 'STARTUP', payload: { command, profile: env.OKX_PROFILE,
-    symbols: env.SYMBOLS }, timestamp: Date.now() });
+    universeSize: env.UNIVERSE_SIZE ?? 12,
+    min24hQuoteVolumeUsdt: env.MIN_24H_QUOTE_VOLUME_USDT ?? 10_000_000 }, timestamp: Date.now() });
   const closeAudit = async (): Promise<void> => {
     try { await audit?.close(); } catch (error) { auditFailure(error); }
   };
