@@ -19,7 +19,7 @@ function numberFromEnv(value: string | undefined, fallback: number, positive: bo
 
 export function openAiConfigFromEnv(env: NodeJS.ProcessEnv = process.env): OpenAiLlmConfig | null {
   if (env.LLM_PROVIDER !== 'openai' || !env.LLM_MODEL?.trim() || !env.OPENAI_API_KEY?.trim()) return null;
-  const timeoutMs = numberFromEnv(env.LLM_TIMEOUT_MS, 3000, true);
+  const timeoutMs = numberFromEnv(env.LLM_TIMEOUT_MS, 4500, true);
   const maxOutputTokens = numberFromEnv(env.LLM_MAX_OUTPUT_TOKENS, 300, true);
   const maxCallsPerHour = numberFromEnv(env.LLM_MAX_CALLS_PER_HOUR, 25, true);
   const maxCallsPerDay = numberFromEnv(env.LLM_MAX_CALLS_PER_DAY, 250, true);

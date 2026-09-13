@@ -55,6 +55,10 @@ function mockedClient(result: Response = response()) {
 }
 
 describe('OpenAI market critic', () => {
+  it('defaults the critic timeout to 4500ms while honoring explicit overrides', () => {
+    expect(openAiConfigFromEnv({ ...env, LLM_TIMEOUT_MS: undefined })?.timeoutMs).toBe(4500);
+    expect(openAiConfigFromEnv(env)?.timeoutMs).toBe(50);
+  });
   it.each(['AGREE', 'DISAGREE', 'ABSTAIN'] as const)('accepts valid %s', async action => {
     const { client, fetchImpl } = mockedClient(response({ ...baseDecision, action }));
     const result = await client.evaluateSelectedCandidate(context());
