@@ -124,6 +124,16 @@ export async function main(command: string | undefined = process.argv[2], env: N
   try { agent = createProductionAgent(env, { audit: record,
     statusPath: env.AURA_STATUS_SNAPSHOT_PATH ?? '.aura/status.json' }); }
   catch (error) { await closeAudit(); throw error; }
+  const DEFAULT_MIN_EDGE_COST_RATIO = 1.8;
+  if (agent.config.risk.minEdgeCostRatio !== DEFAULT_MIN_EDGE_COST_RATIO) {
+    record({ eventType: 'EXPERIMENTAL_THRESHOLD', timestamp: Date.now(), payload: {
+      message: `EXPERIMENTAL_THRESHOLD ACTIVE: MIN_EDGE_COST_RATIO=${agent.config.risk.minEdgeCostRatio} `
+        + `(default ${DEFAULT_MIN_EDGE_COST_RATIO}) — one-day trial, not evidence-based recalibration.`,
+      parameter: 'MIN_EDGE_COST_RATIO',
+      activeValue: agent.config.risk.minEdgeCostRatio,
+      defaultValue: DEFAULT_MIN_EDGE_COST_RATIO,
+    } });
+  }
   if (command === 'run') {
     const report = await agent.preflight();
     printReport(report);
