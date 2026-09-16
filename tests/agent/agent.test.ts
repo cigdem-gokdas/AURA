@@ -64,7 +64,7 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
   held?: string; profile?: 'demo' | 'live'; armed?: boolean; observer?: (s: ObserverSnapshot) => void;
   audit?: (event: AuditEvent) => void | Promise<void>;
   llmFailure?: boolean; ambiguous?: boolean; evaluationDelay?: Promise<void>; tickerPrice?: number;
-  missingTool?: string } = {}) {
+  missingTool?: string; now?: () => number; dynamicEvaluationTime?: boolean } = {}) {
   const profile = options.profile ?? 'live';
   let connected = false;
   let writeConnected = false;
@@ -129,11 +129,15 @@ function harness(options: { scores?: Record<string, number>; edges?: Record<stri
         memory_signal: 'NONE' as const }, latencyMs: 1,
       usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, estimatedCostUsd: 0 } }) };
   const evaluated: string[] = [];
-  const deps: AgentDependencies = { connector, market, execution, llm, now: () => NOW,
+  const deps: AgentDependencies = { connector, market, execution, llm, now: options.now ?? (() => NOW),
     smokeRecovery: { begin: async () => undefined, clear: async () => undefined },
     evaluateSymbol: vi.fn(async symbol => { evaluated.push(symbol);
       if (options.evaluationDelay) await options.evaluationDelay;
-      return evaluation(symbol, options.scores?.[symbol] ?? 80, options.edges?.[symbol] ?? 3); }),
+      const result = evaluation(symbol, options.scores?.[symbol] ?? 80, options.edges?.[symbol] ?? 3);
+      if (!options.dynamicEvaluationTime) return result;
+      const timestamp = options.now?.() ?? NOW;
+      return { ...result, feature: { ...result.feature, timestamp, dataAgeMs: 0 },
+        candidate: { ...result.candidate, timestamp } }; }),
     startupContext: (snap, references) => options.held ? { referencePrices: references,
       openedAtBySymbol: { [options.held]: NOW - 100 }, protectionPlans: { [options.held]: protection(options.held) },
       protectionModes: { [options.held]: 'CLIENT_SIDE' } } :
@@ -199,7 +203,7 @@ describe('AURA orchestration', () => {
     expect((await h.agent.preflight()).passed).toBe(true);
     expect(h.agent.activate()).toBe(true);
     const result = await h.agent.runSlowCycle();
-    expect(h.evaluated).toEqual(symbols);
+    expect(h.evaluated).toEqual([...symbols, selected]);
     expect(result.selectedSymbol).toBe(selected);
     expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
     expect(vi.mocked(h.llm.evaluateSelectedCandidate).mock.calls[0]?.[0].candidate.symbol).toBe(selected);
@@ -207,6 +211,51 @@ describe('AURA orchestration', () => {
     const entryId = vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0].clientOrderId;
     expect(entryId).toMatch(/^AURAENTRY[0-9a-f]{22}$/);
     expect(entryId).toMatch(/^[A-Za-z0-9]{1,32}$/);
+    await h.agent.shutdown();
+  });
+
+  it('refreshes only the selected setup after slow reconciliation without relaxing freshness', async () => {
+    let clock = NOW;
+    const h = harness({ now: () => clock, dynamicEvaluationTime: true });
+    let snapshots = 0;
+    h.execution.getStartupSnapshot = vi.fn(async () => {
+      snapshots += 1;
+      // AURA gets one startup snapshot, one before ranking, then a costly
+      // pre-entry reconciliation. The original candidate is now 20 seconds old.
+      if (snapshots === 3) {
+        clock += 20_000;
+        h.snapshot.timestamp = clock;
+      }
+      return h.snapshot;
+    });
+    expect((await h.agent.preflight()).passed).toBe(true);
+    expect(h.agent.activate()).toBe(true);
+    const result = await h.agent.runSlowCycle();
+    expect(result.status).toBe('SUBMITTED');
+    expect(h.evaluated).toEqual([...symbols, 'BTC-USDT']);
+    expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
+    expect(h.agent.getJudgeSnapshot()?.reasoning.riskCertificate?.gates
+      .find(gate => gate.name === 'DATA_FRESH')?.status).toBe('PASS');
+    await h.agent.shutdown();
+  });
+
+  it('never submits when the selected setup disappears during final freshness refresh', async () => {
+    const h = harness();
+    const deps = (h.agent as unknown as { deps: AgentDependencies }).deps;
+    const original = deps.evaluateSymbol!;
+    let evaluations = 0;
+    deps.evaluateSymbol = async (symbol, previous, position) => {
+      const result = await original(symbol, previous, position);
+      evaluations += 1;
+      return evaluations === 3 ? { ...result, candidate: { ...result.candidate,
+        action: 'HOLD', intent: 'NONE', setupType: 'NONE' } } : result;
+    };
+    expect((await h.agent.preflight()).passed).toBe(true);
+    expect(h.agent.activate()).toBe(true);
+    expect(await h.agent.runSlowCycle()).toMatchObject({ status: 'REJECTED',
+      reason: 'Selected setup changed during final freshness check' });
+    expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
     await h.agent.shutdown();
   });
 
@@ -299,7 +348,7 @@ describe('AURA orchestration', () => {
     const result = await h.agent.runSlowCycle();
     expect(result.status).toBe('SUBMITTED');
     expect(result.selectedSymbol).not.toBe(held);
-    expect(h.evaluated.slice(-2)).toEqual(symbols);
+    expect(h.evaluated.slice(-3)).toEqual([...symbols, result.selectedSymbol]);
     expect(h.llm.evaluateSelectedCandidate).toHaveBeenCalledTimes(1);
     expect(h.execution.submitApprovedOrder).toHaveBeenCalledTimes(1);
     expect(vi.mocked(h.execution.submitApprovedOrder).mock.calls[0]?.[0]).toMatchObject({
@@ -373,6 +422,34 @@ describe('AURA orchestration', () => {
     await h.agent.shutdown();
     expect(h.connector.disconnect).toHaveBeenCalledTimes(2);
     expect(h.agent.state).toBe('HALTED');
+  });
+
+  it('keeps recovery fail-closed but retries after a bounded cooldown', async () => {
+    let currentTime = NOW;
+    const events: AuditEvent[] = [];
+    const h = harness({ now: () => currentTime, audit: event => { events.push(event); } });
+    expect((await h.agent.preflight()).passed).toBe(true);
+    expect(h.agent.activate()).toBe(true);
+    h.execution.getStartupSnapshot = vi.fn(async () => { throw new Error('IP whitelist unavailable'); });
+    h.setWriteConnected(false);
+    for (let attempt = 0; attempt < 3; attempt += 1) await h.agent.runFastCycle();
+    expect(h.agent.state).toBe('DEGRADED');
+    expect(h.execution.getStartupSnapshot).toHaveBeenCalledTimes(3);
+    await h.agent.runFastCycle();
+    expect(h.execution.getStartupSnapshot).toHaveBeenCalledTimes(3);
+    expect(events.some(event => event.eventType === 'DEGRADED'
+      && (event.payload as { retryPolicy?: string }).retryPolicy === 'BOUNDED_5_MINUTE_COOLDOWN')).toBe(true);
+    currentTime += 300_000;
+    h.snapshot.timestamp = currentTime;
+    h.market.getTicker = vi.fn(async symbol => ({ symbol, bid: 99.99, ask: 100.01,
+      last: 100, timestamp: currentTime }));
+    h.market.getTradingBalanceSnapshot = vi.fn(async () => ({ totalEquityUsd: 10_000,
+      balances: [{ currency: 'USDT', equity: 10_000, available: 10_000 }], timestamp: currentTime }));
+    h.execution.getStartupSnapshot = vi.fn(async () => h.snapshot);
+    await h.agent.runFastCycle();
+    expect(h.agent.state).toBe('LIVE');
+    expect(h.execution.submitApprovedOrder).not.toHaveBeenCalled();
+    await h.agent.shutdown();
   });
 
   it('reports separate lane readiness and blocks entry after a WRITE crash', async () => {
@@ -1133,6 +1210,8 @@ describe('AURA attached protection lifecycle and observe mode', () => {
     expect(plans[1]?.side).toBe('SELL');
     expect(await h.agent.positionMonitor!.getOpenPosition()).toBeNull();
     expect(h.execution.cancelAttachedProtection).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(h.execution.cancelAttachedProtection!).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(h.execution.submitApprovedOrder).mock.invocationCallOrder[1]!);
     expect(vi.mocked(h.execution.cancelAttachedProtection!).mock.calls[0]?.[0]).toMatchObject({
       symbol: 'BTC-USDT', entryOrderId: 'order-1', protectionIds: ['algo-1'] });
     expect(h.agent.state).toBe('LIVE');
@@ -1158,9 +1237,10 @@ describe('AURA attached protection lifecycle and observe mode', () => {
     h.snapshot.positions = [{ symbol: 'BTC-USDT', quantity: position!.quantity, averageEntryPrice: 100, updatedAt: NOW }];
     vi.mocked(h.market.getTicker).mockResolvedValue({ symbol: 'BTC-USDT', bid: 79.99, ask: 80.01, last: 80, timestamp: NOW });
     await h.agent.runFastCycle();
-    expect(await h.agent.positionMonitor!.getOpenPosition()).toBeNull();
+    expect(await h.agent.positionMonitor!.getOpenPosition()).not.toBeNull();
     expect(h.agent.state).toBe('DEGRADED');
     expect(h.agent.getJudgeSnapshot()?.safety.reconciliationPending).toBe(true);
+    expect(plans).toHaveLength(1);
     const submissions = plans.length;
     expect((await h.agent.runSlowCycle()).status).toBe('BLOCKED');
     expect(plans).toHaveLength(submissions);
@@ -1407,7 +1487,7 @@ describe('attached protection demo verifier (production entry path)', () => {
         && (e.payload as { protectionMode?: string; protectionVerified?: boolean }).protectionMode === 'EXCHANGE_SIDE'
         && (e.payload as { protectionVerified?: boolean }).protectionVerified === true)).toBe(true);
       expect(events.some(e => e.eventType === 'PROTECTION'
-        && (e.payload as { reason?: string }).reason === 'ATTACHED_CLEANUP_CANCELLED')).toBe(true);
+        && (e.payload as { reason?: string }).reason === 'ATTACHED_PRE_EXIT_CANCELLED')).toBe(true);
       expect(events.some(e => e.eventType === 'DEMO_SMOKE'
         && (e.payload as { stage?: string }).stage === 'ATTACHED_FINAL_STATE')).toBe(true);
     });
@@ -1429,11 +1509,12 @@ describe('attached protection demo verifier (production entry path)', () => {
       const result = await agent.attachedProtectionSmoke();
       expect(result.passed).toBe(false);
       expect(result.reason).toContain('MANUAL_RECONCILIATION_REQUIRED');
-      expect(plans).toHaveLength(2);
+      expect(plans).toHaveLength(1);
       expect(marker.clear).not.toHaveBeenCalled();
       expect(agent.state).toBe('DEGRADED');
+      expect(await agent.positionMonitor!.getOpenPosition()).not.toBeNull();
       expect((await agent.runSlowCycle()).status).toBe('BLOCKED');
-      expect(plans).toHaveLength(2);
+      expect(plans).toHaveLength(1);
     });
   });
 

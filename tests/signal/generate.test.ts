@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_SIGNAL_CONFIG,
   generateCandidate,
   SignalGenerationError,
 } from '../../src/signal/generate.js';
 import { costs, features, flat, regime } from './fixtures.js';
 
 describe('generateCandidate', () => {
+  it('defaults to the configured 1.3 edge-to-cost floor', () => {
+    expect(DEFAULT_SIGNAL_CONFIG.minEdgeCostRatio).toBe(1.3);
+  });
   it.each(['BTC-USDT', 'ETH-USDT'])(
     'proposes a %s trend continuation long',
     (symbol) => {
@@ -23,9 +27,10 @@ describe('generateCandidate', () => {
         setupType: 'TREND_CONTINUATION',
         regime: 'TRENDING_UP',
         opportunityScore: 84,
-        estimatedMoveBps: 50,
+        // 200 ATR bps × 1.5 ATR stop × 2.5R target = 750 bps.
+        estimatedMoveBps: 750,
         estimatedRoundTripCostBps: 8,
-        edgeToCostRatio: 6.25,
+        edgeToCostRatio: 93.75,
         clearsEstimatedCosts: true,
         timestamp: 1_000_000,
       });
@@ -61,9 +66,10 @@ describe('generateCandidate', () => {
         setupType: 'RANGE_MEAN_REVERSION',
         regime: 'RANGE',
         opportunityScore: 77.5,
-        estimatedMoveBps: 75,
+        // Range entries use the same whole-trade protection horizon.
+        estimatedMoveBps: 750,
         estimatedRoundTripCostBps: 8,
-        edgeToCostRatio: 9.375,
+        edgeToCostRatio: 93.75,
       });
     },
   );
@@ -217,10 +223,10 @@ describe('generateCandidate', () => {
       features('BTC-USDT'),
       regime('BTC-USDT'),
       flat,
-      { feeBpsPerSide: 20, estimatedSlippageBpsPerSide: 10 },
+      { feeBpsPerSide: 300, estimatedSlippageBpsPerSide: 100 },
     );
-    expect(costly.estimatedRoundTripCostBps).toBe(62);
-    expect(costly.edgeToCostRatio).toBeCloseTo(50 / 62, 10);
+    expect(costly.estimatedRoundTripCostBps).toBe(802);
+    expect(costly.edgeToCostRatio).toBeCloseTo(750 / 802, 10);
     expect(costly).toMatchObject({
       action: 'HOLD',
       clearsEstimatedCosts: false,

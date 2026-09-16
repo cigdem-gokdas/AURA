@@ -60,16 +60,25 @@ export function derivePipeline(
   const market = nodes.filter(
     (node) => node.source === 'ATK_MCP' && node.lane === 'READ',
   );
-  if (market.length)
-    set(
-      'MARKET',
-      market.every((node) => node.success) ? 'PASSED' : 'FAILED',
-      `${market.length} read-side MCP call${market.length === 1 ? '' : 's'}`,
-    );
   const evaluated = nodes.filter(
     (node) =>
       node.source === 'LOCAL' && node.description.includes('Features, regime'),
   );
+  const ranking = nodes.find((node) =>
+    node.description.includes('cross-symbol ranking'),
+  );
+  if (market.length) {
+    const failedReads = market.filter((node) => !node.success).length;
+    // A transient READ failure remains visible in the trace, but a completed
+    // feature/ranking path proves it did not fail the market stage of this decision.
+    const coreMarketCompleted = evaluated.length > 0 && evaluated.every((node) => node.success)
+      && ranking?.success === true
+      && ['HOLD', 'REJECTED', 'SUBMITTED', 'MONITORING'].includes(path.result);
+    set('MARKET', failedReads === 0 || coreMarketCompleted ? 'PASSED' : 'FAILED',
+      `${market.length} read-side MCP call${market.length === 1 ? '' : 's'}`
+        + (failedReads ? `; ${failedReads} failed trace${failedReads === 1 ? '' : 's'}`
+          + (coreMarketCompleted ? ', evaluation completed' : '') : ''));
+  }
   for (const name of ['FEATURES', 'REGIME', 'CANDIDATE'] as const) {
     if (evaluated.length)
       set(
@@ -78,9 +87,6 @@ export function derivePipeline(
         `${evaluated.length} symbol evaluation${evaluated.length === 1 ? '' : 's'}`,
       );
   }
-  const ranking = nodes.find((node) =>
-    node.description.includes('cross-symbol ranking'),
-  );
   if (ranking)
     set('RANKING', ranking.success ? 'PASSED' : 'FAILED', ranking.result);
   const critic = nodes.find((node) => node.source === 'LLM');

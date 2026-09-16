@@ -98,7 +98,7 @@ describe('summarizeSignalCalibration', () => {
       features('ETH-USDT'),
       regime('ETH-USDT'),
       flat,
-      { feeBpsPerSide: 20, estimatedSlippageBpsPerSide: 10 },
+      { feeBpsPerSide: 300, estimatedSlippageBpsPerSide: 100 },
     );
     const scoreReject = generateCandidate(
       'ETH-USDT',

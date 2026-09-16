@@ -309,6 +309,18 @@ describe('rendered dashboard evidence and empty states', () => {
       'NO ELIGIBLE OPPORTUNITY',
     );
   });
+  it('does not present a missing setup as a measured zero edge/cost ratio', () => {
+    const s = fixture();
+    s.functional.markets = {
+      'BTC-USDT': { ...s.functional.markets['BTC-USDT']!,
+        candidateAction: 'HOLD', setupType: 'NONE', edgeCostRatio: 0 },
+      'ETH-USDT': { ...s.functional.markets['ETH-USDT']!,
+        candidateAction: 'HOLD', setupType: 'NONE', edgeCostRatio: 0 },
+    };
+    const html = render(React.createElement(Markets, { s }));
+    expect(html).not.toContain('0×');
+    expect(html).toContain('Edge / cost</span><strong>—</strong>');
+  });
   it('renders critic verdict, counter-thesis, audited setup grade, and optional evidence', () => {
     const html = render(
       React.createElement(Critic, { s: fixture(), setupQuality: 'B' }),
@@ -440,7 +452,35 @@ describe('read-only view models', () => {
     });
     s.atk.latestProvenance!.nodes[0]!.success = false;
     stages = derivePipeline(s);
+    expect(stages[0]).toMatchObject({
+      status: 'PASSED',
+      detail: '1 read-side MCP call; 1 failed trace, evaluation completed',
+    });
+    s.atk.latestProvenance!.result = 'BLOCKED';
+    stages = derivePipeline(s);
     expect(stages[0]?.status).toBe('FAILED');
+  });
+  it('shows a recovered read failure without marking the completed market stage failed', () => {
+    const s = fixture();
+    const path = s.atk.latestProvenance!;
+    const read = path.nodes[0]!;
+    const evaluation = path.nodes[1]!;
+    path.nodes = [
+      { ...read, toolName: 'spot_get_fills', symbol: 'HYPE-USDT', success: false,
+        result: 'TOOL_CALL_FAILED', latencyMs: 284394 },
+      { ...read, toolName: 'spot_get_fills', symbol: 'HYPE-USDT', success: true,
+        result: 'OK', latencyMs: 430 },
+      ...Array.from({ length: 12 }, (_, index) => ({ ...evaluation,
+        symbol: `PAIR${index}-USDT` })),
+      path.nodes[2]!,
+    ];
+    path.result = 'HOLD';
+    const market = derivePipeline(s).find((stage) => stage.name === 'MARKET');
+    expect(market).toMatchObject({
+      status: 'PASSED',
+      detail: '2 read-side MCP calls; 1 failed trace, evaluation completed',
+    });
+    expect(path.nodes[0]).toMatchObject({ success: false, result: 'TOOL_CALL_FAILED' });
   });
   it('preserves ordered backend gates and final result without recalculating risk', () => {
     const s = fixture();

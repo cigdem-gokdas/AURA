@@ -57,6 +57,16 @@ export class AgentRecoveryStore {
     await rename(temporary, this.path);
   }
 
+  private async saveCheckpoints(checkpoints: readonly RecoveryCheckpoint[]): Promise<void> {
+    if (!checkpoints.length) {
+      await unlink(this.path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+      return;
+    }
+    const temporary = `${this.path}.${process.pid}.tmp`;
+    await writeFile(temporary, JSON.stringify({ version: 2, positions: checkpoints }), { mode: 0o600 });
+    await rename(temporary, this.path);
+  }
+
   private async load(): Promise<RecoveryCheckpoint[]> {
     let raw: string;
     try { raw = await readFile(this.path, 'utf8'); }
@@ -92,18 +102,66 @@ export class AgentRecoveryStore {
   async ownedSymbols(): Promise<readonly string[]> { return (await this.load()).map(item => item.symbol); }
 
   async context(snapshot: StartupExchangeSnapshot, references: Readonly<Record<string, number>>): Promise<StartupMonitorContext> {
-    const checkpoints = await this.load();
+    const loadedCheckpoints = await this.load();
+    const closureTimes = new Map<string, number>();
+    for (const checkpoint of loadedCheckpoints) {
+      if (checkpoint.protectionMode !== 'EXCHANGE_SIDE' || !(checkpoint.attachedProtectionIds?.length)
+        || (!checkpoint.entryOrderId && !checkpoint.entryClientOrderId)) continue;
+      const entryFills = snapshot.recentFills.filter(fill => fill.symbol === checkpoint.symbol
+        && fill.side === 'buy'
+        && (!checkpoint.entryOrderId || fill.orderId === checkpoint.entryOrderId)
+        && (!checkpoint.entryClientOrderId || !fill.clientOrderId
+          || fill.clientOrderId === checkpoint.entryClientOrderId));
+      if (!entryFills.length) continue;
+      const base = checkpoint.symbol.split('-')[0];
+      const netEntryQuantity = entryFills.reduce((sum, fill) => sum + fill.quantity
+        - (fill.feeCurrency === base ? Math.abs(fill.fee ?? 0) : 0), 0);
+      const lastEntryAt = Math.max(...entryFills.map(fill => fill.timestamp));
+      const exits = snapshot.recentFills.filter(fill => fill.symbol === checkpoint.symbol
+        && fill.side === 'sell' && fill.timestamp >= lastEntryAt);
+      if (!positive(netEntryQuantity) || !exits.length) continue;
+      const soldQuantity = exits.reduce((sum, fill) => sum + fill.quantity, 0);
+      const walletQuantity = snapshot.positions.find(item => item.symbol === checkpoint.symbol)?.quantity ?? 0;
+      const tolerance = Math.max(quantityTolerance, netEntryQuantity * 1e-6);
+      const noOpenOrder = !snapshot.openOrders.some(order => order.symbol === checkpoint.symbol);
+      // Attached OKX TP/SL fills do not preserve AURA's client ID. Exact base
+      // conservation proves closure without treating arbitrary wallet inventory
+      // as managed: entry net = subsequent sells + only sub-ppm dust.
+      if (noOpenOrder && walletQuantity <= tolerance
+        && Math.abs(netEntryQuantity - soldQuantity - walletQuantity) <= tolerance) {
+        closureTimes.set(checkpoint.symbol, Math.max(...exits.map(fill => fill.timestamp)));
+      }
+    }
+    const checkpoints = loadedCheckpoints.filter(item => !closureTimes.has(item.symbol));
+    if (checkpoints.length !== loadedCheckpoints.length) await this.saveCheckpoints(checkpoints);
     const bySymbol = new Map(checkpoints.map(item => [item.symbol, item]));
     const claims = new Set<string>();
     const heldSymbols = new Set(snapshot.positions.filter(position => position.quantity > 0).map(position => position.symbol));
     for (const order of snapshot.openOrders) if (isAuraProductionClientId(order.clientOrderId)) claims.add(order.symbol);
     for (const symbol of heldSymbols) {
       const auraFills = snapshot.recentFills
-        .filter(fill => fill.symbol === symbol && isAuraProductionClientId(fill.clientOrderId))
+        .filter(fill => fill.symbol === symbol && isAuraProductionClientId(fill.clientOrderId)
+          && fill.timestamp > (closureTimes.get(symbol) ?? -Infinity))
         .sort((a, b) => a.timestamp - b.timestamp);
       if (!auraFills.length) continue;
-      const bought = auraFills.filter(fill => fill.side !== 'sell').reduce((sum, fill) => sum + fill.quantity, 0);
+      const base = symbol.split('-')[0];
+      const buys = auraFills.filter(fill => fill.side !== 'sell');
+      const bought = buys.reduce((sum, fill) => sum + fill.quantity
+        - (fill.feeCurrency === base ? Math.abs(fill.fee ?? 0) : 0), 0);
       const sold = auraFills.filter(fill => fill.side === 'sell').reduce((sum, fill) => sum + fill.quantity, 0);
+      const firstBuyAt = buys.length ? Math.min(...buys.map(fill => fill.timestamp)) : Infinity;
+      const allSubsequentSells = snapshot.recentFills.filter(fill => fill.symbol === symbol
+        && fill.side === 'sell' && fill.timestamp >= firstBuyAt)
+        .reduce((sum, fill) => sum + fill.quantity, 0);
+      const walletQuantity = snapshot.positions.find(item => item.symbol === symbol)?.quantity ?? 0;
+      const closureTolerance = Math.max(quantityTolerance, bought * 1e-6);
+      // A materialized attached OKX stop has an exchange-generated client ID.
+      // Exact conservation still proves that no AURA-owned base remains, even
+      // after its checkpoint was already cleared on an earlier preflight.
+      const conclusivelyClosed = positive(bought) && walletQuantity <= closureTolerance
+        && !snapshot.openOrders.some(order => order.symbol === symbol)
+        && Math.abs(bought - allSubsequentSells - walletQuantity) <= closureTolerance;
+      if (conclusivelyClosed) continue;
       if (auraFills.at(-1)!.side !== 'sell' || bought - sold > bought * 0.005 + quantityTolerance)
         claims.add(symbol);
     }

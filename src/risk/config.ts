@@ -24,7 +24,7 @@ export function riskConfigFromEnv(env: NodeJS.ProcessEnv = process.env): RiskCon
     maxSpreadBps: spread === undefined || spread.trim() === '' ? null : Number(spread),
     maxAtrPercentile: envNumber(env, 'MAX_ATR_PERCENTILE', 0.95),
     opportunityScoreThreshold: envNumber(env, 'OPPORTUNITY_SCORE_THRESHOLD', 65),
-    minEdgeCostRatio: envNumber(env, 'MIN_EDGE_COST_RATIO', 1.8),
+    minEdgeCostRatio: envNumber(env, 'MIN_EDGE_COST_RATIO', 1.3),
     initialStopAtrMultiplier: envNumber(env, 'INITIAL_STOP_ATR_MULTIPLIER', 1.5),
     breakEvenTriggerR: envNumber(env, 'BREAK_EVEN_TRIGGER_R', 1),
     trailingActivationR: envNumber(env, 'TRAILING_ACTIVATION_R', 1.5),

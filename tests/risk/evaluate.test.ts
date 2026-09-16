@@ -276,6 +276,7 @@ describe('deterministic entry risk', () => {
     expect(config.maxConcurrentPositions).toBe(3);
     expect(config.maxTotalExposurePct).toBe(0.25);
     expect(config.maxPositionPct).toBe(0.25);
+    expect(config.minEdgeCostRatio).toBe(1.3);
     expect(riskConfigFromEnv({ MAX_CONCURRENT_POSITIONS: '2', MAX_TOTAL_EXPOSURE_PCT: '0.30', MAX_POSITION_PCT: '0.10' }))
       .toMatchObject({ maxConcurrentPositions: 2, maxTotalExposurePct: 0.3, maxPositionPct: 0.1 });
   });

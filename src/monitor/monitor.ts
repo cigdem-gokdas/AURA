@@ -131,15 +131,27 @@ export class InMemoryPositionMonitor implements PositionMonitor {
     });
     if (!fill.symbol || !fill.fillId || !positive(fill.quantity) || !positive(fill.price)
       || !finite(fill.fee) || fill.fee < 0 || !finite(fill.timestamp)
-      || fill.timestamp < this.timestamp || (fill.side !== 'BUY' && fill.side !== 'SELL')) {
+      || (fill.side !== 'BUY' && fill.side !== 'SELL')) {
       return result('INVALID_FILL');
     }
     const fillKey = `${fill.symbol}:${fill.fillId}`;
+    // Reconciliation can return an already-applied fill after a newer mark has
+    // advanced the monitor clock. Identity is authoritative for idempotency, so
+    // recognize the duplicate before enforcing monotonic time on a new fill.
     if (this.seenFills.has(fillKey)) return result('DUPLICATE_FILL');
+    if (fill.timestamp < this.timestamp) return result('INVALID_FILL');
     const current = this.positions.get(fill.symbol) ?? null;
     if (fill.side === 'BUY') {
       if (!current && this.positions.size >= this.maxConcurrentPositions) return result('SYMBOL_CONFLICT');
-      if (current && !policy?.allowSameSymbolIncrease) return result('SAME_SYMBOL_INCREASE_NOT_ALLOWED');
+      // Multiple fills from one approved exchange order are one entry, not an
+      // independently requested same-symbol increase. Both exchange identities
+      // must match; a second order still requires explicit upstream permission.
+      const sameOpeningOrder = current !== null
+        && Boolean(current.entryOrderId) && current.entryOrderId === fill.exchangeOrderId
+        && Boolean(current.entryClientOrderId) && current.entryClientOrderId === fill.clientOrderId;
+      if (current && !policy?.allowSameSymbolIncrease && !sameOpeningOrder) {
+        return result('SAME_SYMBOL_INCREASE_NOT_ALLOWED');
+      }
       const plan = policy?.protectionPlan ?? null;
       if (!validProtection(fill.symbol, plan) || policy?.protectionMode !== plan.protectionMode) {
         return result('PROTECTION_MISMATCH');

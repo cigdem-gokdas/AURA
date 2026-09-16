@@ -223,4 +223,78 @@ describe('stale checkpoint after an AURA exit', () => {
       await expect(store.context(exchange, { 'ETH-USDT': 101 })).rejects.toThrow('stale checkpoint');
     });
   });
+
+  it('clears an exchange-protected checkpoint after exact stop fills leave only sub-ppm dust', async () => {
+    await withStore(async store => {
+      const monitor = new InMemoryPositionMonitor(10_000, 0);
+      const symbol = 'XLM-USDT';
+      const protection = { ...plan(symbol), protectionMode: 'EXCHANGE_SIDE' as const };
+      const clientOrderId = createOkxClientId('ENTRY');
+      expect(monitor.processFill({ symbol, clientOrderId, exchangeOrderId: 'entry-order', fillId: 'entry-1',
+        side: 'BUY', quantity: 19.794807378, price: 0.19253, fee: 0, timestamp: 100 },
+      { allowSameSymbolIncrease: false, protectionPlan: protection, protectionMode: 'EXCHANGE_SIDE',
+        entryProtectionIds: ['attached-sl', 'attached-tp'] }).status).toBe('APPLIED');
+      await store.save((await monitor.getOpenPosition(symbol))!);
+
+      const exchange = snapshot(holding(symbol, 0.000000378));
+      exchange.timestamp = 300;
+      exchange.recentFills = [
+        { symbol, orderId: 'entry-order', clientOrderId, fillId: 'buy-1', side: 'buy',
+          quantity: 19.814622, price: 0.19253, fee: -0.019814622,
+          feeCurrency: 'XLM', timestamp: 100 },
+        { symbol, orderId: 'stop-order', clientOrderId: 'O3925642606444655616', fillId: 'sell-1',
+          side: 'sell', quantity: 19.794807, price: 0.19144, fee: -0.003,
+          feeCurrency: 'USDT', timestamp: 200 },
+      ];
+      const context = await store.context(exchange, { [symbol]: 0.19144 });
+      expect(context.managedPositions).toEqual([]);
+      expect(context.unmanagedInventory).toMatchObject([{ symbol, quantity: 0.000000378 }]);
+      expect(await store.ownedSymbols()).toEqual([]);
+      const secondStartup = await store.context(exchange, { [symbol]: 0.19144 });
+      expect(secondStartup.managedPositions).toEqual([]);
+      expect(secondStartup.unmanagedInventory).toMatchObject([{ symbol, quantity: 0.000000378 }]);
+    });
+  });
+
+  it('recognizes an exact attached-stop round trip after its checkpoint is already absent', async () => {
+    await withStore(async store => {
+      const symbol = 'XLM-USDT';
+      const clientOrderId = createOkxClientId('ENTRY');
+      const exchange = snapshot(holding(symbol, 0.000000378));
+      exchange.timestamp = 300;
+      exchange.recentFills = [
+        { symbol, orderId: 'entry-order', clientOrderId, side: 'buy', quantity: 19.814622,
+          price: 0.19253, fee: -0.019814622, feeCurrency: 'XLM', timestamp: 100 },
+        { symbol, orderId: 'stop-order', clientOrderId: 'O3925642606444655616', side: 'sell',
+          quantity: 19.794807, price: 0.19144, fee: -0.003, feeCurrency: 'USDT', timestamp: 200 },
+      ];
+      const context = await store.context(exchange, { [symbol]: 0.19144 });
+      expect(context.managedPositions).toEqual([]);
+      expect(context.unmanagedInventory).toMatchObject([{ symbol, quantity: 0.000000378 }]);
+    });
+  });
+
+  it('does not clear an exchange-protected checkpoint when quantity conservation is ambiguous', async () => {
+    await withStore(async store => {
+      const monitor = new InMemoryPositionMonitor(10_000, 0);
+      const symbol = 'XLM-USDT';
+      const protection = { ...plan(symbol), protectionMode: 'EXCHANGE_SIDE' as const };
+      const clientOrderId = createOkxClientId('ENTRY');
+      monitor.processFill({ symbol, clientOrderId, exchangeOrderId: 'entry-order', fillId: 'entry-1',
+        side: 'BUY', quantity: 1, price: 0.2, fee: 0, timestamp: 100 },
+      { allowSameSymbolIncrease: false, protectionPlan: protection, protectionMode: 'EXCHANGE_SIDE',
+        entryProtectionIds: ['attached-sl'] });
+      await store.save((await monitor.getOpenPosition(symbol))!);
+      const exchange = snapshot(holding(symbol, 0.2));
+      exchange.timestamp = 300;
+      exchange.recentFills = [
+        { symbol, orderId: 'entry-order', clientOrderId, side: 'buy', quantity: 1,
+          price: 0.2, fee: 0, feeCurrency: 'XLM', timestamp: 100 },
+        { symbol, orderId: 'unknown-sell', clientOrderId: null, side: 'sell', quantity: 0.7,
+          price: 0.19, fee: 0, feeCurrency: 'USDT', timestamp: 200 },
+      ];
+      await expect(store.context(exchange, { [symbol]: 0.19 })).rejects.toThrow('mismatched');
+      expect(await store.ownedSymbols()).toEqual([symbol]);
+    });
+  });
 });

@@ -96,6 +96,25 @@ describe('symbol-aware monitor fills and performance', () => {
     expect((await monitor.getEquitySnapshot()).currentEquity).toBe(10_057);
   });
 
+  it('aggregates partial BUY fills from the same approved order without enabling a second order', async () => {
+    const monitor = new InMemoryPositionMonitor(10_000, start);
+    const first = { ...fill('XLM-USDT', 'BUY', 10, 0.19, 0.01, start, 'partial-1'),
+      exchangeOrderId: 'entry-order', clientOrderId: 'entry-client' };
+    const second = { ...fill('XLM-USDT', 'BUY', 15, 0.2, 0.02, start + 1, 'partial-2'),
+      exchangeOrderId: 'entry-order', clientOrderId: 'entry-client' };
+    expect(monitor.processFill(first, policy('XLM-USDT')).status).toBe('APPLIED');
+    expect(monitor.processFill(second, policy('XLM-USDT')).status).toBe('APPLIED');
+    expect(await monitor.getOpenPosition('XLM-USDT')).toMatchObject({
+      quantity: 25, weightedAverageEntryPrice: 0.196,
+      entryOrderId: 'entry-order', entryClientOrderId: 'entry-client',
+    });
+
+    const separateOrder = { ...fill('XLM-USDT', 'BUY', 1, 0.2, 0, start + 2, 'separate'),
+      exchangeOrderId: 'another-order', clientOrderId: 'another-client' };
+    expect(monitor.processFill(separateOrder, policy('XLM-USDT')).status)
+      .toBe('SAME_SYMBOL_INCREASE_NOT_ALLOWED');
+  });
+
   it('rejects cross-symbol BUY merging without mutating BTC state', async () => {
     const monitor = new InMemoryPositionMonitor(10_000, start, 10_000, 1);
     monitor.processFill(fill('BTC-USDT', 'BUY'), policy('BTC-USDT'));
@@ -148,6 +167,14 @@ describe('symbol-aware monitor fills and performance', () => {
     expect(monitor.processFill(fill('ETH-USDT', 'SELL', 2.0000000001, 120, 0, start + 1)).status).toBe('OVERSELL');
     expect(monitor.processFill(fill('ETH-USDT', 'SELL', -1, 120, 0, start + 1)).status).toBe('INVALID_FILL');
     expect(await monitor.getEquitySnapshot()).toEqual(before);
+  });
+
+  it('recognizes an already-applied fill after a newer mark advanced the monitor clock', () => {
+    const monitor = new InMemoryPositionMonitor(10_000, start);
+    const buy = fill('ETH-USDT', 'BUY');
+    expect(monitor.processFill(buy, policy('ETH-USDT')).status).toBe('APPLIED');
+    monitor.updateMark('ETH-USDT', 101, start + 10);
+    expect(monitor.processFill(buy, policy('ETH-USDT')).status).toBe('DUPLICATE_FILL');
   });
 
   it('tracks mark-to-market equity, daily return, drawdown, max drawdown, and win/loss streaks', async () => {

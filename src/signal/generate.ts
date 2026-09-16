@@ -12,8 +12,10 @@ import type {
 
 export const DEFAULT_SIGNAL_CONFIG: Readonly<SignalConfig> = Object.freeze({
   opportunityScoreThreshold: 65,
-  minEdgeCostRatio: 1.8,
+  minEdgeCostRatio: 1.3,
   maxDataAgeMs: 10_000,
+  initialStopAtrMultiplier: 1.5,
+  takeProfitR: 2.5,
 });
 
 export class SignalGenerationError extends Error {
@@ -104,6 +106,15 @@ function validate(
     Number.isFinite(config.maxDataAgeMs) && config.maxDataAgeMs > 0,
     'Invalid data-age horizon',
   );
+  requireCondition(
+    Number.isFinite(config.initialStopAtrMultiplier) &&
+      config.initialStopAtrMultiplier > 0,
+    'Invalid initial-stop ATR multiplier',
+  );
+  requireCondition(
+    Number.isFinite(config.takeProfitR) && config.takeProfitR > 0,
+    'Invalid take-profit R multiple',
+  );
   if (position.openLong !== null) {
     requireCondition(
       typeof position.openLong.symbol === 'string' &&
@@ -173,30 +184,20 @@ function score(
 }
 
 /**
- * Conservative deterministic move estimate:
- * trend = min(0.5 ATR bps, 0.5 positive five-bar return bps);
- * range = min(0.5 ATR bps, 0.25 |negative z-score| ATR bps).
+ * Deterministic favorable-move planning horizon. Entry costs cover the whole
+ * trade, so the compared move uses the trade's configured take-profit distance:
+ * ATR × initial stop multiplier × take-profit R. This is a target, not a forecast.
  * Exits and non-setups have no estimated entry move.
  */
 function estimatedEntryMoveBps(
   features: FeatureSnapshot,
   setupType: SetupType,
+  config: SignalConfig,
 ): number {
   const atrBps = finite(features.atrPct * 10_000, 'ATR basis points', 0);
-  if (setupType === 'TREND_CONTINUATION') {
-    return finite(
-      Math.min(0.5 * atrBps, 0.5 * Math.max(0, features.return5 * 10_000)),
-      'trend move',
-      0,
-    );
-  }
-  if (setupType === 'RANGE_MEAN_REVERSION') {
-    return finite(
-      Math.min(0.5 * atrBps, 0.25 * Math.max(0, -features.zScore20) * atrBps),
-      'range move',
-      0,
-    );
-  }
+  if (setupType === 'TREND_CONTINUATION' || setupType === 'RANGE_MEAN_REVERSION')
+    return finite(atrBps * config.initialStopAtrMultiplier * config.takeProfitR,
+      'planned favorable move', 0);
   return 0;
 }
 
@@ -277,7 +278,7 @@ export function generateCandidate(
     }
   }
 
-  const estimatedMoveBps = estimatedEntryMoveBps(features, setupType);
+  const estimatedMoveBps = estimatedEntryMoveBps(features, setupType, config);
   const edgeToCostRatio =
     estimatedRoundTripCostBps > 0
       ? finite(

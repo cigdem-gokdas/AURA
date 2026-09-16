@@ -441,7 +441,9 @@ export function Markets({ s }: { s: JudgeSnapshot | null }) {
               </div>
               <div>
                 <span>Edge / cost</span>
-                <strong>{num(market?.edgeCostRatio)}×</strong>
+                <strong>{!market || market.setupType === 'NONE'
+                  ? '—'
+                  : `${num(market.edgeCostRatio)}×`}</strong>
               </div>
               <div>
                 <span>Spread</span>

@@ -293,6 +293,23 @@ describe('bounded read-lane retry', () => {
     expect(client.callTool).toHaveBeenCalledTimes(1);
   });
 
+  it('reports an IP-whitelist rejection without leaking identifiers or retrying it', async () => {
+    const readConfig: OkxConnectorConfig = { ...config, lane: 'READ', readOnly: true };
+    const { client, factory } = fakeSession(['spot_get_orders']);
+    client.callTool.mockResolvedValue({ isError: true, structuredContent: {
+      ok: false, tool: 'spot_get_orders', code: '50110',
+      message: "Your IP 2001:db8::1 is not included in your API key's private-id IP whitelist.",
+    } });
+    const connector = new OkxMcpConnector(readConfig, factory);
+    await connector.connect();
+    await expect(connector.callTool('spot_get_orders', { status: 'open', instId: 'ETH-USDT' }))
+      .rejects.toMatchObject({ category: 'TOOL_CALL_FAILED', diagnostic: {
+        exchangeCode: '50110', exchangeMessage: 'Egress IP is not in the OKX API key IP whitelist',
+      } });
+    expect(client.callTool).toHaveBeenCalledOnce();
+    await connector.disconnect();
+  });
+
   it('paces account fee reads below the documented five-per-two-second user limit', async () => {
     vi.useFakeTimers();
     try {

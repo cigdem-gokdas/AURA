@@ -6,6 +6,7 @@ const tickers = [
   { symbol: 'BTC-USDT', quoteVolume24h: 500_000_000, timestamp: now },
   { symbol: 'ETH-USDT', quoteVolume24h: 300_000_000, timestamp: now },
   { symbol: 'SOL-USDT', quoteVolume24h: 90_000_000, timestamp: now },
+  { symbol: 'USDC-USDT', quoteVolume24h: 450_000_000, timestamp: now },
   { symbol: 'MEME-USDT', quoteVolume24h: 9_000, timestamp: now },
   { symbol: 'MICRO-USDT', quoteVolume24h: 500, timestamp: now },
   { symbol: 'DELIST-USDT', quoteVolume24h: 600_000_000, timestamp: now },
@@ -22,6 +23,7 @@ describe('daily liquid universe', () => {
     expect(result.excludedForLiquidity).toBe(2);
     expect(result.excludedForStatus).toBe(1);
     expect(result.excludedForStaleness).toBe(1);
+    expect(result.excludedStablecoinPairs).toBe(1);
     expect(result.minimumQuoteVolume24h).toBe(10_000_000);
   });
 

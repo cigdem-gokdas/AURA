@@ -6,6 +6,7 @@ export interface UniverseSelection {
   excludedForLiquidity: number;
   excludedForStatus: number;
   excludedForStaleness: number;
+  excludedStablecoinPairs: number;
   evaluatedAt: number;
 }
 
@@ -19,11 +20,13 @@ export function selectLiquidUniverse(tickers: readonly SpotTicker24h[],
   const listed = new Map(instruments.map(item => [item.symbol, item.state]));
   const seen = new Set<string>();
   const eligible: { symbol: string; quoteVolume24h: number }[] = [];
-  let excludedForLiquidity = 0, excludedForStatus = 0, excludedForStaleness = 0;
+  const stablecoinBases = new Set(['USDC', 'DAI', 'FDUSD', 'TUSD', 'USDP', 'PYUSD', 'USDG', 'USDE', 'USDS']);
+  let excludedForLiquidity = 0, excludedForStatus = 0, excludedForStaleness = 0, excludedStablecoinPairs = 0;
   for (const ticker of tickers) {
     if (!/^[A-Z0-9]+-USDT$/.test(ticker.symbol)) continue;
     if (seen.has(ticker.symbol)) throw new Error(`Duplicate ticker ${ticker.symbol}`);
     seen.add(ticker.symbol);
+    if (stablecoinBases.has(ticker.symbol.split('-')[0]!)) { excludedStablecoinPairs++; continue; }
     if (listed.get(ticker.symbol) !== 'live') { excludedForStatus++; continue; }
     if (!Number.isSafeInteger(ticker.timestamp) || ticker.timestamp > evaluatedAt
       || evaluatedAt - ticker.timestamp > maxDataAgeMs) { excludedForStaleness++; continue; }
@@ -34,5 +37,5 @@ export function selectLiquidUniverse(tickers: readonly SpotTicker24h[],
   }
   eligible.sort((a,b) => b.quoteVolume24h - a.quoteVolume24h || a.symbol.localeCompare(b.symbol));
   return { selected: eligible.slice(0,topN), minimumQuoteVolume24h,
-    excludedForLiquidity, excludedForStatus, excludedForStaleness, evaluatedAt };
+    excludedForLiquidity, excludedForStatus, excludedForStaleness, excludedStablecoinPairs, evaluatedAt };
 }

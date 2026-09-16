@@ -89,6 +89,8 @@ function diagnosticField(value: unknown): string | null {
 function safeBusinessMessage(value: unknown): string | null {
   const message = diagnosticField(value);
   if (!message) return null;
+  if (/not included in your API key.*IP whitelist/i.test(message))
+    return 'Egress IP is not in the OKX API key IP whitelist';
   // Business messages are useful, but a server must not be able to echo secrets into audit.
   return /(?:api.?key|secret|passphrase|password|authorization|bearer|credential|token)/i.test(message)
     ? '[redacted]' : message;
@@ -356,7 +358,8 @@ export class OkxMcpConnector implements OkxConnector {
       return await this.callToolOnce<T>(toolName, args, traceContext);
     } catch (error) {
       const transientRead = this.config.lane === 'READ' && this.readOnly
-        && error instanceof OkxConnectorError && error.category === 'TOOL_CALL_FAILED';
+        && error instanceof OkxConnectorError && error.category === 'TOOL_CALL_FAILED'
+        && error.diagnostic?.exchangeCode !== '50110';
       if (!transientRead) throw error;
       const rateLimited = error.diagnostic?.exchangeCode === '50011'
         || /too many requests|rate limit/i.test(error.diagnostic?.exchangeMessage ?? '');

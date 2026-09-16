@@ -13,6 +13,8 @@ export interface SignalConfig {
   opportunityScoreThreshold: number;
   minEdgeCostRatio: number;
   maxDataAgeMs: number;
+  initialStopAtrMultiplier: number;
+  takeProfitR: number;
 }
 
 export type SignalRejectionCategory =
